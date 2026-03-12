@@ -275,7 +275,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
         <span class="company-tag d-none d-md-inline ms-2">SaehanSign</span>
       </div>
       <div class="d-flex align-items-center gap-2">
-        <button class="btn btn-sm btn-outline-secondary" onclick="refreshCurrentPage()" title="새로고침"><i class="bi bi-arrow-clockwise"></i></button>
+        <button class="btn btn-outline-secondary" onclick="refreshCurrentPage()" title="새로고침" style="font-size:20px;padding:4px 12px;line-height:1"><i class="bi bi-arrow-clockwise"></i></button>
         <div class="dropdown">
           <button class="btn btn-sm btn-light position-relative" data-bs-toggle="dropdown" onclick="loadNotifications()">
             <i class="bi bi-bell"></i>
@@ -440,8 +440,8 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
           <button class="btn btn-sm btn-outline-danger" onclick="filterMyDocs('rejected',this)">반려</button>
         </div>
         <div class="table-wrap">
-          <table class="table"><thead><tr><th>문서번호</th><th>제목</th><th>문서 종류</th><th>작성일</th><th>상태</th><th></th></tr></thead>
-          <tbody id="myDocsTbody"><tr><td colspan="6" class="text-center text-muted py-4">문서가 없습니다.</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>문서번호</th><th>제목</th><th>문서 종류</th><th>작성자</th><th>작성일</th><th>상태</th><th></th></tr></thead>
+          <tbody id="myDocsTbody"><tr><td colspan="7" class="text-center text-muted py-4">문서가 없습니다.</td></tr></tbody></table>
         </div>
       </div>
 
@@ -1028,10 +1028,10 @@ async function loadPendingApproval() {
 
 async function loadMyDocs() {
   const cached = lsGet('my_docs');
-  if (cached) { myDocsCache = cached; renderDocTable('myDocsTbody', cached, false); }
+  if (cached) { myDocsCache = cached; renderDocTable('myDocsTbody', cached, true); }
   try {
     const result = await api('doc_list', { filter: 'my_created' });
-    if (result.success) { myDocsCache = result.documents; lsPut('my_docs', result.documents); renderDocTable('myDocsTbody', result.documents, false); }
+    if (result.success) { myDocsCache = result.documents; lsPut('my_docs', result.documents); renderDocTable('myDocsTbody', result.documents, true); }
   } catch(ex) {}
 }
 
@@ -1040,7 +1040,7 @@ function filterMyDocs(status, btn) {
   btn.classList.add('active');
   let docs = myDocsCache;
   if (status !== 'all') docs = docs.filter(d => d.status === status);
-  renderDocTable('myDocsTbody', docs, false);
+  renderDocTable('myDocsTbody', docs, true);
 }
 
 async function loadAllDocs() {
@@ -1271,7 +1271,8 @@ async function viewDocument(docId) {
     const canDelete = (String(doc.creator_id) === String(CURRENT_USER.id) || CURRENT_USER.role === 'admin') && doc.status !== 'approved';
     document.getElementById('btnDeleteDoc').style.display = canDelete ? 'inline-block' : 'none';
     // PDF 버튼: 승인된 문서에서 pdf_url 유무에 따라 다운로드/저장 버튼 표시
-    document.getElementById('btnPdf').style.display = (doc.status === 'approved' && doc.pdf_url) ? 'inline-block' : 'none';
+    // PDF 다운로드: 승인 완료 시 또는 결재 진행중이더라도 표시 (스탬프 포함 PDF 생성)
+    document.getElementById('btnPdf').style.display = (doc.status === 'approved' || doc.status === 'pending') ? 'inline-block' : 'none';
     document.getElementById('btnSavePdf').style.display = (doc.status === 'approved' && !doc.pdf_url) ? 'inline-block' : 'none';
 
     // 승인일 표시
@@ -1288,8 +1289,8 @@ async function viewDocument(docId) {
       rejectEl.innerHTML = `<strong><i class="bi bi-x-circle me-1"></i>반려 사유 (${esc(doc.rejection_by||'')})</strong><p class="mb-0 mt-1">${esc(doc.rejection_comment)}</p>`;
     } else { rejectEl.style.display = 'none'; }
 
-    // 결재란 (서명 이미지 표시)
-    renderApprovalStampTable(approvals);
+    // 결재란 (서명 이미지 표시) - 작성자 칸 항상 포함
+    renderApprovalStampTable(approvals, doc);
 
     // 문서 iframe 미리보기
     const iframe = document.getElementById('docPreviewIframe');
@@ -1323,14 +1324,39 @@ function renderApprovalFlow(approvals) {
   }).join('');
 }
 
-function renderApprovalStampTable(approvals) {
+function renderApprovalStampTable(approvals, doc) {
   const c = document.getElementById('docApprovalHeader');
-  if (!approvals.length) { c.innerHTML = ''; return; }
+  if (!approvals.length && !doc) { c.innerHTML = ''; return; }
+
+  // 작성자 칸이 결재이력에 없으면 앞에 추가
+  let steps = [...approvals];
+  const hasAuthorStep = steps.length > 0 && steps[0].step_name === '작성';
+  if (!hasAuthorStep && doc) {
+    // 현재 사용자 목록에서 작성자 서명 base64 찾기 (approvals에서 가져올 수 없으므로 doc info 사용)
+    const authorStep = {
+      step_name: '작성',
+      approver_id: doc.creator_id,
+      approver_name: doc.creator_name || '',
+      approver_dept: '',
+      approver_position: '',
+      status: (doc.status !== 'draft') ? 'approved' : 'pending',
+      signed_at: doc.created_at,
+      signature_base64: '', // 서명 base64는 서버에서만 가능하므로 이름 표시
+      signature_mime: ''
+    };
+    // 현재 로그인 사용자가 작성자이면 서명 정보 표시
+    if (String(doc.creator_id) === String(CURRENT_USER.id) && CURRENT_USER.signature_file_id) {
+      authorStep.approver_dept = CURRENT_USER.department || '';
+      authorStep.approver_position = CURRENT_USER.position || '';
+    }
+    steps.unshift(authorStep);
+  }
+
+  if (!steps.length) { c.innerHTML = ''; return; }
   let html = '<table class="approval-stamp-table"><tr>';
-  approvals.forEach(a => { html += `<th>${esc(a.step_name)}</th>`; });
+  steps.forEach(a => { html += `<th>${esc(a.step_name)}</th>`; });
   html += '</tr><tr>';
-  // 서명 이미지 (base64)
-  approvals.forEach(a => {
+  steps.forEach(a => {
     html += '<td class="sig-cell">';
     if (a.status === 'approved' && a.signature_base64) {
       html += `<img src="data:${a.signature_mime || 'image/png'};base64,${a.signature_base64}" alt="서명">`;
@@ -1342,9 +1368,9 @@ function renderApprovalStampTable(approvals) {
     html += '</td>';
   });
   html += '</tr><tr>';
-  approvals.forEach(a => { html += `<td style="font-size:10px">${esc(a.approver_dept)}<br><strong>${esc(a.approver_name)}</strong><br>${esc(a.approver_position)}</td>`; });
+  steps.forEach(a => { html += `<td style="font-size:10px">${esc(a.approver_dept || '')}<br><strong>${esc(a.approver_name)}</strong><br>${esc(a.approver_position || '')}</td>`; });
   html += '</tr><tr>';
-  approvals.forEach(a => { html += `<td style="font-size:9px">${a.signed_at ? formatDate(a.signed_at) : ''}</td>`; });
+  steps.forEach(a => { html += `<td style="font-size:9px">${a.signed_at ? formatDate(a.signed_at) : ''}</td>`; });
   html += '</tr></table>';
   c.innerHTML = html;
 }
@@ -1384,8 +1410,31 @@ async function doReject() {
   } catch(ex) { hideLoading(); showToast('오류: ' + ex.message, 'danger'); }
 }
 
-function handlePdfBtn() {
-  if (currentDocData && currentDocData.pdf_url) window.open(currentDocData.pdf_url, '_blank');
+async function handlePdfBtn() {
+  // 이미 저장된 PDF가 있으면 바로 열기
+  if (currentDocData && currentDocData.pdf_url) {
+    window.open(currentDocData.pdf_url, '_blank');
+    return;
+  }
+  // 없으면 결재 스탬프 포함 PDF 생성 후 다운로드
+  showLoading('PDF 생성 중...');
+  try {
+    const result = await api('generate_pdf', { doc_id: currentDocId });
+    hideLoading();
+    if (result.success && result.pdf_base64) {
+      const byteChars = atob(result.pdf_base64);
+      const byteNums = new Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) byteNums[i] = byteChars.charCodeAt(i);
+      const blob = new Blob([new Uint8Array(byteNums)], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = result.file_name || 'document.pdf';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } else {
+      showToast(result.error || 'PDF 생성 실패', 'danger');
+    }
+  } catch(ex) { hideLoading(); showToast('오류: ' + ex.message, 'danger'); }
 }
 
 async function handleSavePdfBtn() {

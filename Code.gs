@@ -136,6 +136,7 @@ function doPost(e) {
 
       case 'save_pdf': result = savePdfToDrive(data); break;
       case 'regen_pdf': result = regenPdf(data); break;
+      case 'generate_pdf': result = generatePdfWithStamp(data); break;
 
       case 'notifications': result = getNotifications(data); break;
       case 'notification_read': result = markNotificationRead(data); break;
@@ -588,6 +589,23 @@ function getDocumentDetail(data) {
     }
   });
 
+  // 작성자 칸이 결재이력에 없으면 앞에 추가 (서명 base64 포함)
+  const hasAuthorStep = approvals.length > 0 && approvals[0].step_name === '작성';
+  if (!hasAuthorStep) {
+    const creatorInfo = getCreatorInfo(doc.creator_id, doc.creator_name);
+    creatorInfo.signed_at = doc.created_at;
+    creatorInfo.status = (doc.status !== 'draft') ? 'approved' : 'pending';
+    // 작성자 서명 base64
+    if (creatorInfo.signature_file_id) {
+      try {
+        const sigFile = DriveApp.getFileById(creatorInfo.signature_file_id);
+        creatorInfo.signature_base64 = Utilities.base64Encode(sigFile.getBlob().getBytes());
+        creatorInfo.signature_mime = sigFile.getMimeType();
+      } catch(e) { creatorInfo.signature_base64 = ''; }
+    }
+    approvals.unshift(creatorInfo);
+  }
+
   // file_id로 Google Drive 미리보기 URL 제공
   doc.preview_url = doc.file_id ? 'https://drive.google.com/file/d/' + doc.file_id + '/preview' : '';
 
@@ -703,8 +721,36 @@ function approveDocument(data) {
     .filter(a => a.doc_id === String(data.doc_id))
     .sort((a, b) => a.step_order - b.step_order);
 
-  // 현재 사용자의 결재 단계 찾기
-  const myStep = docApprovals.find(a => a.approver_id === String(user.id) && a.status === 'pending');
+  // 문서 상태 확인
+  const docSh = getSheet('문서');
+  const docRowIdx = findRowIndex(docSh, 0, data.doc_id);
+  if (docRowIdx < 0) return { success: false, error: '문서를 찾을 수 없습니다.' };
+  const docStatus = String(docSh.getRange(docRowIdx, 9).getValue());
+  if (docStatus === 'approved') return { success: false, error: '이미 최종 승인된 문서입니다.' };
+  if (docStatus !== 'pending') return { success: false, error: '결재 진행중인 문서가 아닙니다.' };
+
+  // 현재 사용자의 결재 단계 찾기 (pending 또는 waiting 중 순서가 된 것)
+  let myStep = docApprovals.find(a => a.approver_id === String(user.id) && a.status === 'pending');
+
+  // pending이 아니면, 이전 단계가 모두 approved이고 내 차례인 waiting 단계 찾기
+  if (!myStep) {
+    const myWaiting = docApprovals.find(a => a.approver_id === String(user.id) && a.status === 'waiting');
+    if (myWaiting) {
+      const allBefore = docApprovals.filter(a => a.step_order < myWaiting.step_order);
+      const allBeforeApproved = allBefore.every(a => a.status === 'approved');
+      if (allBeforeApproved) {
+        // waiting → pending 전환 후 진행
+        const waitRowIdx = findRowIndex(approvalSh, 0, myWaiting.id);
+        if (waitRowIdx > 0) {
+          approvalSh.getRange(waitRowIdx, 9).setValue('pending');
+          SpreadsheetApp.flush();
+        }
+        myStep = myWaiting;
+        myStep.status = 'pending';
+      }
+    }
+  }
+
   if (!myStep) return { success: false, error: '결재 권한이 없거나 이미 처리되었습니다.' };
 
   // 결재자의 최신 서명 파일 가져오기
@@ -731,9 +777,6 @@ function approveDocument(data) {
 
   // 다음 단계 활성화 또는 최종 승인
   const nextStep = docApprovals.find(a => a.step_order === myStep.step_order + 1);
-  const docSh = getSheet('문서');
-  const docRowIdx = findRowIndex(docSh, 0, data.doc_id);
-  if (docRowIdx < 0) return { success: false, error: '문서를 찾을 수 없습니다.' };
   const docTitle = docSh.getRange(docRowIdx, 3).getValue();
   const creatorId = String(docSh.getRange(docRowIdx, 7).getValue());
 
@@ -783,9 +826,21 @@ function rejectDocument(data) {
     a.approver_id = String(a.approver_id);
   });
 
-  const myStep = allApprovals.find(a =>
-    a.doc_id === String(data.doc_id) && a.approver_id === String(user.id) && a.status === 'pending'
-  );
+  const docApprovals = allApprovals
+    .filter(a => a.doc_id === String(data.doc_id))
+    .sort((a, b) => Number(a.step_order) - Number(b.step_order));
+
+  let myStep = docApprovals.find(a => a.approver_id === String(user.id) && a.status === 'pending');
+  // waiting 상태이지만 이전 단계 모두 승인된 경우 처리
+  if (!myStep) {
+    const myWaiting = docApprovals.find(a => a.approver_id === String(user.id) && a.status === 'waiting');
+    if (myWaiting) {
+      const allBefore = docApprovals.filter(a => a.step_order < myWaiting.step_order);
+      if (allBefore.every(a => a.status === 'approved')) {
+        myStep = myWaiting;
+      }
+    }
+  }
   if (!myStep) return { success: false, error: '결재 권한이 없습니다.' };
 
   const rowIdx = findRowIndex(approvalSh, 0, myStep.id);
@@ -871,34 +926,64 @@ function autoSavePdf(docId, docRowIdx, docSh) {
     .filter(a => String(a.doc_id) === String(docId))
     .sort((a, b) => Number(a.step_order) - Number(b.step_order));
 
+  // 작성자 정보 가져오기
+  const creatorId = String(docSh.getRange(docRowIdx, 7).getValue());
+  const creatorName = docSh.getRange(docRowIdx, 8).getValue() || '';
+  const creatorInfo = getCreatorInfo(creatorId, creatorName);
+
+  // 작성자 칸이 결재이력에 없으면 추가
+  const hasAuthorStep = approvals.length > 0 && approvals[0].step_name === '작성';
+  const stampApprovals = hasAuthorStep ? approvals : [creatorInfo].concat(approvals);
+
   if (origMime === 'application/pdf') {
     // PDF는 직접 결재란 삽입 불가 → 원본 복사
     const blob = originalFile.getBlob().setName(fileName);
     savedFile = targetFolder.createFile(blob);
   } else {
-    // Excel → 임시 Google Sheets로 복사 → 결재란 삽입 → PDF 변환
-    let tempFile = null;
+    // Excel → Google Sheets 변환 → 결재란 삽입 → PDF 변환
+    let tempFileId = null;
     try {
-      tempFile = originalFile.makeCopy('temp_stamp_' + docId, root);
-      const ss = SpreadsheetApp.open(tempFile);
+      // Drive API로 Excel을 Google Sheets 형식으로 변환 복사
+      const resource = {
+        title: 'temp_stamp_' + docId,
+        mimeType: 'application/vnd.google-apps.spreadsheet',
+        parents: [{ id: root.getId() }]
+      };
+      const insertedFile = Drive.Files.copy(resource, fileId, { convert: true });
+      tempFileId = insertedFile.id;
+
+      const ss = SpreadsheetApp.openById(tempFileId);
       const sheet = ss.getSheets()[0];
 
       // ── 결재란 삽입 (우측 상단) ──
-      embedApprovalStamp(sheet, approvals);
+      embedApprovalStamp(sheet, stampApprovals);
       SpreadsheetApp.flush();
 
       // PDF 변환
       const pdfBlob = ss.getAs('application/pdf').setName(fileName);
       savedFile = targetFolder.createFile(pdfBlob);
     } catch(convErr) {
-      Logger.log('결재란+PDF 변환 실패, 원본 저장: ' + convErr.message);
-      // 실패 시 원본 xlsx 저장
-      const origExt = originalFile.getName().split('.').pop();
-      const origFileName = docNumber + '_' + docTitle + '.' + origExt;
-      savedFile = targetFolder.createFile(originalFile.getBlob().setName(origFileName));
+      Logger.log('결재란+PDF 변환 실패: ' + convErr.message);
+      // fallback: Drive API 없으면 makeCopy 시도
+      let tempFile2 = null;
+      try {
+        tempFile2 = originalFile.makeCopy('temp_pdf_' + docId, root);
+        const ss2 = SpreadsheetApp.open(tempFile2);
+        embedApprovalStamp(ss2.getSheets()[0], stampApprovals);
+        SpreadsheetApp.flush();
+        const pdfBlob2 = ss2.getAs('application/pdf').setName(fileName);
+        savedFile = targetFolder.createFile(pdfBlob2);
+      } catch(e2) {
+        Logger.log('fallback PDF 변환도 실패: ' + e2.message);
+        const origExt = originalFile.getName().split('.').pop();
+        const origFileName = docNumber + '_' + docTitle + '.' + origExt;
+        savedFile = targetFolder.createFile(originalFile.getBlob().setName(origFileName));
+      } finally {
+        if (tempFile2) { try { tempFile2.setTrashed(true); } catch(e) {} }
+      }
     } finally {
-      // 임시 파일 삭제
-      if (tempFile) { try { tempFile.setTrashed(true); } catch(e) {} }
+      // 임시 Google Sheets 파일 삭제
+      if (tempFileId) { try { DriveApp.getFileById(tempFileId).setTrashed(true); } catch(e) {} }
     }
   }
 
@@ -907,6 +992,29 @@ function autoSavePdf(docId, docRowIdx, docSh) {
   docSh.getRange(docRowIdx, 14).setValue(savedFile.getUrl());
   docSh.getRange(docRowIdx, 15).setValue(folderPath);
   SpreadsheetApp.flush();
+}
+
+// ========== 작성자 정보 조회 ==========
+function getCreatorInfo(creatorId, creatorName) {
+  const userSh = getSheet('사용자');
+  const userRow = findRowIndex(userSh, 0, creatorId);
+  let dept = '', position = '', sigFileId = '';
+  if (userRow > 0) {
+    dept = userSh.getRange(userRow, 5).getValue() || '';
+    position = userSh.getRange(userRow, 6).getValue() || '';
+    sigFileId = userSh.getRange(userRow, 8).getValue() || '';
+  }
+  return {
+    step_name: '작성',
+    approver_id: creatorId,
+    approver_name: creatorName,
+    approver_dept: dept,
+    approver_position: position,
+    status: 'approved',
+    signed_at: new Date().toISOString(),
+    signature_file_id: sigFileId,
+    signature_applied: 'Y'
+  };
 }
 
 // ========== 결재란 삽입 (시트 우측 상단) ==========
@@ -933,7 +1041,7 @@ function embedApprovalStamp(sheet, approvals) {
     const stepName = a.step_name || a.name || '결재';
     const approverName = a.approver_name || '';
     const isApproved = a.status === 'approved';
-    const approvedDate = a.approved_at ? formatShortDate(a.approved_at) : '';
+    const approvedDate = (a.signed_at || a.approved_at) ? formatShortDate(a.signed_at || a.approved_at) : '';
 
     // Row 2: 단계명 (작성/검토/승인)
     sheet.getRange(2, col).setValue(stepName).setFontSize(8).setFontWeight('bold')
@@ -1009,6 +1117,71 @@ function regenPdf(data) {
     return { success: true, pdf_file_id: pdfFileId, pdf_url: pdfUrl };
   } catch(e) {
     return { success: false, error: 'PDF 저장 실패: ' + e.message };
+  }
+}
+
+// ========== PDF 다운로드 (결재 스탬프 포함) ==========
+function generatePdfWithStamp(data) {
+  const user = getSessionUser(data);
+  const docSh = getSheet('문서');
+  const docRowIdx = findRowIndex(docSh, 0, data.doc_id);
+  if (docRowIdx < 0) return { success: false, error: '문서를 찾을 수 없습니다.' };
+
+  const fileId = docSh.getRange(docRowIdx, 6).getValue();
+  if (!fileId) return { success: false, error: '원본 파일이 없습니다.' };
+
+  const originalFile = DriveApp.getFileById(fileId);
+  const origMime = originalFile.getMimeType();
+
+  // 결재이력 가져오기
+  const approvalSh = getSheet('결재이력');
+  const approvals = sheetToObjects(approvalSh)
+    .filter(a => String(a.doc_id) === String(data.doc_id))
+    .sort((a, b) => Number(a.step_order) - Number(b.step_order));
+
+  // 작성자 정보
+  const creatorId = String(docSh.getRange(docRowIdx, 7).getValue());
+  const creatorName = docSh.getRange(docRowIdx, 8).getValue() || '';
+  const creatorInfo = getCreatorInfo(creatorId, creatorName);
+  const hasAuthorStep = approvals.length > 0 && approvals[0].step_name === '작성';
+  const stampApprovals = hasAuthorStep ? approvals : [creatorInfo].concat(approvals);
+
+  if (origMime === 'application/pdf') {
+    // PDF 원본은 스탬프 삽입 불가 → 원본 그대로 반환
+    const bytes = originalFile.getBlob().getBytes();
+    return { success: true, pdf_base64: Utilities.base64Encode(bytes), file_name: originalFile.getName() };
+  }
+
+  // Excel → Google Sheets 변환 → 스탬프 삽입 → PDF
+  const root = getDriveRootFolder();
+  let tempFileId = null;
+  try {
+    const resource = {
+      title: 'temp_dl_' + data.doc_id,
+      mimeType: 'application/vnd.google-apps.spreadsheet',
+      parents: [{ id: root.getId() }]
+    };
+    const insertedFile = Drive.Files.copy(resource, fileId, { convert: true });
+    tempFileId = insertedFile.id;
+
+    const ss = SpreadsheetApp.openById(tempFileId);
+    const sheet = ss.getSheets()[0];
+    if (stampApprovals.length > 0) embedApprovalStamp(sheet, stampApprovals);
+    SpreadsheetApp.flush();
+
+    const pdfBlob = ss.getAs('application/pdf');
+    const docNumber = docSh.getRange(docRowIdx, 2).getValue();
+    const docTitle = docSh.getRange(docRowIdx, 3).getValue();
+    return {
+      success: true,
+      pdf_base64: Utilities.base64Encode(pdfBlob.getBytes()),
+      file_name: docNumber + '_' + docTitle + '.pdf'
+    };
+  } catch(e) {
+    Logger.log('PDF 생성 실패: ' + e.message);
+    return { success: false, error: 'PDF 생성 실패: ' + e.message };
+  } finally {
+    if (tempFileId) { try { DriveApp.getFileById(tempFileId).setTrashed(true); } catch(e) {} }
   }
 }
 
