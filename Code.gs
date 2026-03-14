@@ -817,6 +817,22 @@ function approveDocument(data) {
       '"' + docTitle + '" 문서가 최종 승인되었습니다.', docTitle);
   }
 
+  // 승인 의견이 있으면 문서 시트에도 저장 (리스트 표시용)
+  if (data.comment && String(data.comment).trim()) {
+    const docHeaders = docSh.getRange(1, 1, 1, docSh.getLastColumn()).getValues()[0];
+    let acCol = docHeaders.indexOf('approval_comment') + 1;
+    let abCol = docHeaders.indexOf('approval_by') + 1;
+    if (acCol === 0) {
+      acCol = docSh.getLastColumn() + 1;
+      abCol = acCol + 1;
+      docSh.getRange(1, acCol).setValue('approval_comment');
+      docSh.getRange(1, abCol).setValue('approval_by');
+    }
+    docSh.getRange(docRowIdx, acCol).setValue(String(data.comment).trim());
+    docSh.getRange(docRowIdx, abCol).setValue(user.name);
+    SpreadsheetApp.flush();
+  }
+
   // 결재 처리 후 관련 사용자 대시보드 캐시 무효화
   cacheDel('dashboard_' + String(user.id));
   cacheDel('dashboard_' + creatorId);
@@ -1033,26 +1049,33 @@ function embedApprovalStamp(sheet, approvals) {
   const STAMP_ROWS = 5;
 
   // ── 삽입 전 원본 컨텐츠 범위 파악 ──
-  const contentLastCol = Math.max(sheet.getLastColumn(), stepCount);
+  const contentLastCol = Math.max(sheet.getLastColumn(), 1);
   const contentLastRow = Math.max(sheet.getLastRow(), 1);
 
   // ── 상단에 5행 삽입 (원본 내용이 아래로 밀림) ──
   sheet.insertRowsBefore(1, STAMP_ROWS);
 
-  // 결재란 위치: 삽입된 1~5행의 우측 정렬
-  const startCol = Math.max(1, contentLastCol - stepCount + 1);
+  // ── 결재란 위치: 기존 열 우측에 새 열 추가 (기존 열 너비 절대 변경 안함) ──
+  const stampGap = 1;                          // 문서와 결재란 사이 빈 열 수
+  const startCol = contentLastCol + stampGap + 1;
+  const endCol   = startCol + stepCount - 1;
 
-  // 결재란 열 너비 고정 (85px)
-  for (let i = 0; i < stepCount; i++) {
-    sheet.setColumnWidth(startCol + i, 85);
+  // 새 열 확보
+  while (sheet.getMaxColumns() < endCol) {
+    sheet.insertColumnAfter(sheet.getMaxColumns());
   }
 
-  // 결재란 행 높이
-  sheet.setRowHeight(1, 22);   // 단계명
-  sheet.setRowHeight(2, 45);   // 서명 상단
-  sheet.setRowHeight(3, 45);   // 서명 하단
-  sheet.setRowHeight(4, 35);   // 이름/부서/직책
-  sheet.setRowHeight(5, 18);   // 결재일
+  // 결재란 열 너비 (새 열에만 적용)
+  for (let i = 0; i < stepCount; i++) {
+    sheet.setColumnWidth(startCol + i, 72);
+  }
+
+  // 결재란 행 높이 (줄임 — 서명 칸 축소)
+  sheet.setRowHeight(1, 18);   // 단계명
+  sheet.setRowHeight(2, 26);   // 서명 상단
+  sheet.setRowHeight(3, 26);   // 서명 하단
+  sheet.setRowHeight(4, 26);   // 이름/부서/직책
+  sheet.setRowHeight(5, 14);   // 결재일
 
   // ── Row 1: 단계명 헤더 ──
   for (let i = 0; i < stepCount; i++) {
@@ -1064,7 +1087,7 @@ function embedApprovalStamp(sheet, approvals) {
       .setBackground('#e0f2f2');
   }
 
-  // ── Row 2-3: 서명 이미지 (병합) ──
+  // ── Row 2-3: 서명 이미지 (병합, 이미지 크기 축소) ──
   for (let i = 0; i < stepCount; i++) {
     const col = startCol + i;
     const a = approvals[i];
@@ -1076,13 +1099,13 @@ function embedApprovalStamp(sheet, approvals) {
       if (a.signature_file_id) {
         try {
           const sigBlob = DriveApp.getFileById(a.signature_file_id).getBlob();
-          sheet.insertImage(sigBlob, col, 2).setWidth(70).setHeight(60);
+          sheet.insertImage(sigBlob, col, 2).setWidth(55).setHeight(42);
           sigInserted = true;
         } catch(e) {}
       }
       if (!sigInserted) {
         sheet.getRange(2, col).setValue(a.approver_name || '')
-          .setFontSize(11).setFontWeight('bold');
+          .setFontSize(9).setFontWeight('bold');
       }
     }
   }
@@ -1093,7 +1116,7 @@ function embedApprovalStamp(sheet, approvals) {
     const a = approvals[i];
     sheet.getRange(4, col)
       .setValue((a.approver_dept || '') + '\n' + (a.approver_name || '') + '\n' + (a.approver_position || ''))
-      .setFontSize(8).setHorizontalAlignment('center').setVerticalAlignment('middle')
+      .setFontSize(7).setHorizontalAlignment('center').setVerticalAlignment('middle')
       .setWrap(true);
   }
 
@@ -1113,19 +1136,19 @@ function embedApprovalStamp(sheet, approvals) {
   // ── 메모(Threaded comment 포함) 전체 삭제 → 2페이지 원인 차단 ──
   try { sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearNote(); } catch(e) {}
 
-  // ── 인쇄 범위 초과 행 삭제 (빈 행 / 변환된 comment 텍스트 행 제거) ──
+  // ── 인쇄 범위 초과 행 삭제 (변환된 comment 텍스트 행 제거) ──
   const totalRows = STAMP_ROWS + contentLastRow;
   const maxRows = sheet.getMaxRows();
   if (maxRows > totalRows + 1) {
     try { sheet.deleteRows(totalRows + 1, maxRows - totalRows); } catch(e) {}
   }
 
-  // PDF 인쇄 범위 반환 (0-indexed)
+  // PDF 인쇄 범위 반환 (0-indexed): 문서 전체 너비 + 결재란 열 포함
   return {
     r1: 0,
     c1: 0,
     r2: totalRows - 1,
-    c2: contentLastCol - 1
+    c2: endCol - 1
   };
 }
 
@@ -1145,10 +1168,12 @@ function exportSheetAsPdf(ss, fileName, printRange) {
     '&printtitle=false' +
     '&pagenumbers=false' + // 페이지 번호 제거
     '&notes=false' +       // 메모 제거 (2페이지 원인 차단)
-    '&top_margin=0.25' +
-    '&bottom_margin=0.25' +
-    '&left_margin=0.25' +
-    '&right_margin=0.25' +
+    '&horizontal_alignment=CENTER' + // 가로 가운데 정렬
+    '&vertical_alignment=TOP' +      // 세로 상단 정렬 (내용 위에서 시작)
+    '&top_margin=0.4' +
+    '&bottom_margin=0.4' +
+    '&left_margin=0.4' +
+    '&right_margin=0.4' +
     '&gid=' + sheetId;
 
   // 명시적 인쇄 범위 (빈 행/열 제외하여 1페이지 보장)
