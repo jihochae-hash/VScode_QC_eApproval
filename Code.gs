@@ -459,6 +459,12 @@ function getTemplateFile(data) {
 // ========== 문서 관리 ==========
 function getDocuments(data) {
   const user = getSessionUser(data);
+
+  // 30초 캐시 (filter/category 조합별)
+  const cacheKey = 'docs_' + (data.filter || 'all') + '_' + (data.category || '') + '_' + String(user.id);
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
   const sh = getSheet('문서');
   let docs = sheetToObjects(sh).filter(d => d.status !== 'deleted');
 
@@ -482,7 +488,9 @@ function getDocuments(data) {
 
   if (data.category) docs = docs.filter(d => d.category === data.category);
   docs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  return { success: true, documents: docs };
+  const result = { success: true, documents: docs };
+  cachePut(cacheKey, result, 30); // 30초 캐시
+  return result;
 }
 
 function createDocument(data) {
@@ -535,14 +543,15 @@ function createDocument(data) {
     }
   }
 
+  // 사용자 시트 한 번만 로드 (루프 밖)
+  const userShForSig = getSheet('사용자');
   steps.forEach((step, idx) => {
     const actualStepNum = idx + 1 + stepOffset;
     // 결재자의 최신 서명 파일 ID를 사용자 시트에서 가져옴
     let sigFileId = step.signature_file_id || '';
     if (!sigFileId && step.approver_id) {
-      const userSh = getSheet('사용자');
-      const userRow = findRowIndex(userSh, 0, step.approver_id);
-      if (userRow > 0) sigFileId = userSh.getRange(userRow, 8).getValue() || '';
+      const userRow = findRowIndex(userShForSig, 0, step.approver_id);
+      if (userRow > 0) sigFileId = userShForSig.getRange(userRow, 8).getValue() || '';
     }
     approvalSh.appendRow([
       generateId(), id, actualStepNum, step.name, step.approver_id,
@@ -553,6 +562,10 @@ function createDocument(data) {
 
   SpreadsheetApp.flush();
   cacheDel('dashboard_' + user.id); // 대시보드 캐시 무효화
+  // 문서 목록 캐시 무효화 (카테고리 없는 기본 키)
+  ['all', 'my_created', 'pending_my_approval', 'approved', 'rejected'].forEach(f => {
+    cacheDel('docs_' + f + '__' + String(user.id));
+  });
   return { success: true, id: id, doc_number: docNumber };
 }
 
@@ -761,33 +774,27 @@ function approveDocument(data) {
     currentSigFileId = userSh.getRange(userRow, 8).getValue() || '';
   }
 
-  // 결재이력 업데이트
+  // 결재이력 업데이트 (배치 쓰기로 속도 개선)
   const rowIdx = findRowIndex(approvalSh, 0, myStep.id);
   if (rowIdx < 0) return { success: false, error: '결재 이력을 찾을 수 없습니다.' };
 
-  approvalSh.getRange(rowIdx, 9).setValue('approved');
-  approvalSh.getRange(rowIdx, 10).setValue(new Date().toISOString());
-  approvalSh.getRange(rowIdx, 11).setValue(data.comment || '');
-  approvalSh.getRange(rowIdx, 12).setValue('Y');
-  // 서명 파일 ID 업데이트 (최신 서명 사용)
-  if (currentSigFileId) {
-    approvalSh.getRange(rowIdx, 13).setValue(currentSigFileId);
-  }
-  SpreadsheetApp.flush();
+  const now = new Date().toISOString();
+  approvalSh.getRange(rowIdx, 9, 1, 5).setValues([[
+    'approved', now, data.comment || '', 'Y', currentSigFileId || myStep.signature_file_id || ''
+  ]]);
 
   // 다음 단계 활성화 또는 최종 승인
   const nextStep = docApprovals.find(a => a.step_order === myStep.step_order + 1);
-  const docTitle = docSh.getRange(docRowIdx, 3).getValue();
-  const creatorId = String(docSh.getRange(docRowIdx, 7).getValue());
+  const docRow = docSh.getRange(docRowIdx, 1, 1, 20).getValues()[0];
+  const docTitle = String(docRow[2] || '');
+  const creatorId = String(docRow[6] || '');
 
   if (nextStep) {
     // 다음 결재자 pending으로 변경
     const nextRowIdx = findRowIndex(approvalSh, 0, nextStep.id);
-    if (nextRowIdx > 0) {
-      approvalSh.getRange(nextRowIdx, 9).setValue('pending');
-    }
+    if (nextRowIdx > 0) approvalSh.getRange(nextRowIdx, 9).setValue('pending');
     docSh.getRange(docRowIdx, 10).setValue(myStep.step_order + 1);
-    SpreadsheetApp.flush();
+    SpreadsheetApp.flush(); // 단 1회만 flush
 
     createNotification(nextStep.approver_id, data.doc_id, 'approval_request',
       user.name + '님이 "' + docTitle + '" 문서를 승인했습니다. 결재를 진행해주세요.', docTitle);
@@ -796,8 +803,8 @@ function approveDocument(data) {
   } else {
     // 최종 승인
     docSh.getRange(docRowIdx, 9).setValue('approved');
-    docSh.getRange(docRowIdx, 12).setValue(new Date().toISOString());
-    SpreadsheetApp.flush();
+    docSh.getRange(docRowIdx, 12).setValue(now);
+    SpreadsheetApp.flush(); // 단 1회만 flush
 
     // 원본 파일을 PDF로 변환하여 저장
     try {
@@ -956,11 +963,11 @@ function autoSavePdf(docId, docRowIdx, docSh) {
       const sheet = ss.getSheets()[0];
 
       // ── 결재란 삽입 (우측 상단) ──
-      embedApprovalStamp(sheet, stampApprovals);
+      const printRange = embedApprovalStamp(sheet, stampApprovals);
       SpreadsheetApp.flush();
 
-      // PDF 변환 (A4 한 페이지에 맞춤)
-      const pdfBlob = exportSheetAsPdf(ss, fileName);
+      // PDF 변환 (명시적 인쇄 범위 지정으로 1페이지 보장)
+      const pdfBlob = exportSheetAsPdf(ss, fileName, printRange);
       savedFile = targetFolder.createFile(pdfBlob);
     } catch(convErr) {
       Logger.log('결재란+PDF 변환 실패: ' + convErr.message);
@@ -969,9 +976,9 @@ function autoSavePdf(docId, docRowIdx, docSh) {
       try {
         tempFile2 = originalFile.makeCopy('temp_pdf_' + docId, root);
         const ss2 = SpreadsheetApp.open(tempFile2);
-        embedApprovalStamp(ss2.getSheets()[0], stampApprovals);
+        const printRange2 = embedApprovalStamp(ss2.getSheets()[0], stampApprovals);
         SpreadsheetApp.flush();
-        const pdfBlob2 = exportSheetAsPdf(ss2, fileName);
+        const pdfBlob2 = exportSheetAsPdf(ss2, fileName, printRange2);
         savedFile = targetFolder.createFile(pdfBlob2);
       } catch(e2) {
         Logger.log('fallback PDF 변환도 실패: ' + e2.message);
@@ -1017,72 +1024,76 @@ function getCreatorInfo(creatorId, creatorName) {
   };
 }
 
-// ========== 결재란 삽입 (시트 우측 상단, 행 삽입 없이 오버레이) ==========
+// ========== 결재란 삽입 (상단 5행 삽입 → 결재란 우측 상단 배치) ==========
+// 반환값: { r1, c1, r2, c2 } (0-indexed PDF 인쇄 범위)
 function embedApprovalStamp(sheet, approvals) {
-  if (!approvals || approvals.length === 0) return;
+  if (!approvals || approvals.length === 0) return null;
 
   const stepCount = approvals.length;
+  const STAMP_ROWS = 5;
 
-  // ── 기존 시트의 열/행 범위 확인 ──
-  const lastCol = Math.max(sheet.getLastColumn(), 6);
+  // ── 삽입 전 원본 컨텐츠 범위 파악 ──
+  const contentLastCol = Math.max(sheet.getLastColumn(), stepCount);
+  const contentLastRow = Math.max(sheet.getLastRow(), 1);
 
-  // 결재란 위치: 기존 컨텐츠의 우측 상단 (행 삽입 안함)
-  // 컬럼 수가 부족하면 추가
-  const stampCols = stepCount;
-  const startCol = lastCol + 2; // 기존 컨텐츠에서 1칸 띄워서 시작
-  while (sheet.getMaxColumns() < startCol + stampCols) {
-    sheet.insertColumnAfter(sheet.getMaxColumns());
+  // ── 상단에 5행 삽입 (원본 내용이 아래로 밀림) ──
+  sheet.insertRowsBefore(1, STAMP_ROWS);
+
+  // 결재란 위치: 삽입된 1~5행의 우측 정렬
+  const startCol = Math.max(1, contentLastCol - stepCount + 1);
+
+  // 결재란 열 너비 고정 (85px)
+  for (let i = 0; i < stepCount; i++) {
+    sheet.setColumnWidth(startCol + i, 85);
   }
-  // 행도 최소 5행 확보
-  while (sheet.getMaxRows() < 5) {
-    sheet.insertRowAfter(sheet.getMaxRows());
-  }
 
-  // ── Row 1: 단계명 헤더 (작성 / 검토 / 승인) ──
+  // 결재란 행 높이
+  sheet.setRowHeight(1, 22);   // 단계명
+  sheet.setRowHeight(2, 45);   // 서명 상단
+  sheet.setRowHeight(3, 45);   // 서명 하단
+  sheet.setRowHeight(4, 35);   // 이름/부서/직책
+  sheet.setRowHeight(5, 18);   // 결재일
+
+  // ── Row 1: 단계명 헤더 ──
   for (let i = 0; i < stepCount; i++) {
     const col = startCol + i;
     const a = approvals[i];
-    const stepName = a.step_name || '결재';
-    sheet.getRange(1, col).setValue(stepName).setFontSize(8).setFontWeight('bold')
+    sheet.getRange(1, col).setValue(a.step_name || '결재')
+      .setFontSize(8).setFontWeight('bold')
       .setHorizontalAlignment('center').setVerticalAlignment('middle')
       .setBackground('#e0f2f2');
-    sheet.setColumnWidth(col, 90);
   }
 
-  // ── Row 2-3: 서명 이미지 영역 (2행 병합) ──
+  // ── Row 2-3: 서명 이미지 (병합) ──
   for (let i = 0; i < stepCount; i++) {
     const col = startCol + i;
     const a = approvals[i];
-    const isApproved = a.status === 'approved';
-
     sheet.getRange(2, col, 2, 1).merge()
       .setHorizontalAlignment('center').setVerticalAlignment('middle')
       .setBackground('#ffffff');
-
-    if (isApproved) {
+    if (a.status === 'approved') {
       let sigInserted = false;
       if (a.signature_file_id) {
         try {
-          const sigFile = DriveApp.getFileById(a.signature_file_id);
-          const sigBlob = sigFile.getBlob();
-          sheet.insertImage(sigBlob, col, 2).setWidth(70).setHeight(40);
+          const sigBlob = DriveApp.getFileById(a.signature_file_id).getBlob();
+          sheet.insertImage(sigBlob, col, 2).setWidth(70).setHeight(60);
           sigInserted = true;
         } catch(e) {}
       }
       if (!sigInserted) {
         sheet.getRange(2, col).setValue(a.approver_name || '')
-          .setFontSize(12).setFontWeight('bold');
+          .setFontSize(11).setFontWeight('bold');
       }
     }
   }
 
-  // ── Row 4: 부서 + 이름 + 직책 (한 셀에 줄바꿈) ──
+  // ── Row 4: 부서 + 이름 + 직책 ──
   for (let i = 0; i < stepCount; i++) {
     const col = startCol + i;
     const a = approvals[i];
-    const info = (a.approver_dept || '') + '\n' + (a.approver_name || '') + '\n' + (a.approver_position || '');
-    sheet.getRange(4, col).setValue(info).setFontSize(8)
-      .setHorizontalAlignment('center').setVerticalAlignment('middle')
+    sheet.getRange(4, col)
+      .setValue((a.approver_dept || '') + '\n' + (a.approver_name || '') + '\n' + (a.approver_position || ''))
+      .setFontSize(8).setHorizontalAlignment('center').setVerticalAlignment('middle')
       .setWrap(true);
   }
 
@@ -1095,33 +1106,53 @@ function embedApprovalStamp(sheet, approvals) {
       .setHorizontalAlignment('center').setVerticalAlignment('middle');
   }
 
-  // ── 테두리 & 스타일 ──
-  const stampRange = sheet.getRange(1, startCol, 5, stepCount);
-  stampRange.setBorder(true, true, true, true, true, true, '#006666', SpreadsheetApp.BorderStyle.SOLID);
+  // ── 테두리 ──
+  sheet.getRange(1, startCol, STAMP_ROWS, stepCount)
+    .setBorder(true, true, true, true, true, true, '#006666', SpreadsheetApp.BorderStyle.SOLID);
 
-  // 행 높이 (기존 행 높이가 너무 작으면 조정)
-  try { sheet.setRowHeight(2, Math.max(sheet.getRowHeight(2), 25)); } catch(e) {}
-  try { sheet.setRowHeight(3, Math.max(sheet.getRowHeight(3), 25)); } catch(e) {}
-  try { sheet.setRowHeight(4, Math.max(sheet.getRowHeight(4), 40)); } catch(e) {}
+  // ── 인쇄 범위를 딱 필요한 만큼만 확보 (2페이지 방지) ──
+  const totalRows = STAMP_ROWS + contentLastRow;
+  const maxRows = sheet.getMaxRows();
+  if (maxRows > totalRows + 2) {
+    try { sheet.deleteRows(totalRows + 1, maxRows - totalRows - 2); } catch(e) {}
+  }
+
+  // PDF 인쇄 범위 반환 (0-indexed)
+  return {
+    r1: 0,
+    c1: 0,
+    r2: totalRows - 1,
+    c2: contentLastCol - 1
+  };
 }
 
 // ========== A4 한 페이지 PDF 내보내기 ==========
-function exportSheetAsPdf(ss, fileName) {
+// printRange: { r1, c1, r2, c2 } (0-indexed) — 지정 시 해당 범위만 출력
+function exportSheetAsPdf(ss, fileName, printRange) {
   const sheetId = ss.getSheets()[0].getSheetId();
-  const url = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export?' +
+  let url = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export?' +
     'format=pdf' +
     '&size=A4' +
     '&portrait=true' +
     '&scale=4' +           // 4 = "한 페이지에 맞춤(Fit to page)"
     '&fitw=true' +
+    '&fith=true' +         // 세로도 페이지에 맞춤 (2페이지 방지)
     '&sheetnames=false' +
     '&gridlines=false' +
     '&printtitle=false' +
+    '&pagenumbers=false' + // 페이지 번호 제거
+    '&notes=false' +       // 메모 제거 (2페이지 원인 차단)
     '&top_margin=0.25' +
     '&bottom_margin=0.25' +
     '&left_margin=0.25' +
     '&right_margin=0.25' +
     '&gid=' + sheetId;
+
+  // 명시적 인쇄 범위 (빈 행/열 제외하여 1페이지 보장)
+  if (printRange) {
+    url += '&r1=' + printRange.r1 + '&c1=' + printRange.c1 +
+           '&r2=' + printRange.r2 + '&c2=' + printRange.c2;
+  }
 
   const token = ScriptApp.getOAuthToken();
   const response = UrlFetchApp.fetch(url, {
@@ -1208,13 +1239,14 @@ function generatePdfWithStamp(data) {
 
     const ss = SpreadsheetApp.openById(tempFileId);
     const sheet = ss.getSheets()[0];
-    if (stampApprovals.length > 0) embedApprovalStamp(sheet, stampApprovals);
+    let printRange = null;
+    if (stampApprovals.length > 0) printRange = embedApprovalStamp(sheet, stampApprovals);
     SpreadsheetApp.flush();
 
     const docNumber = docSh.getRange(docRowIdx, 2).getValue();
     const docTitle = docSh.getRange(docRowIdx, 3).getValue();
     const pdfFileName = docNumber + '_' + docTitle + '.pdf';
-    const pdfBlob = exportSheetAsPdf(ss, pdfFileName);
+    const pdfBlob = exportSheetAsPdf(ss, pdfFileName, printRange);
     return {
       success: true,
       pdf_base64: Utilities.base64Encode(pdfBlob.getBytes()),
