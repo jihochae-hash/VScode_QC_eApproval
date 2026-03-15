@@ -128,7 +128,9 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
 .approval-stamp-table .sig-cell img { max-width:60px; max-height:40px; object-fit:contain; }
 .loading-overlay { position:fixed; inset:0; background:rgba(240,246,246,.8); display:flex; align-items:center; justify-content:center; z-index:9999; }
 .loading-overlay .spinner-border { color:var(--primary) !important; }
-.toast-container { position:fixed; top:20px; right:20px; z-index:9999; }
+.toast-container { position:fixed; top:12px; left:calc(var(--sidebar-w) + (100vw - var(--sidebar-w)) / 4); right:0; display:flex; flex-direction:column; align-items:center; z-index:9999; pointer-events:none; }
+.toast-container > * { pointer-events:auto; max-width:420px; }
+@media (max-width:768px) { .toast-container { left:0; } }
 /* ── 사이드바 오버레이 ── */
 .sidebar-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:999; }
 .sidebar-overlay.show { display:block; }
@@ -250,7 +252,6 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
         <li class="nav-item"><a class="nav-link" href="#" data-page="doc-create"><i class="bi bi-file-earmark-plus"></i>새 문서 작성</a></li>
         <li class="nav-item"><a class="nav-link" href="#" data-page="pending-approval"><i class="bi bi-inbox"></i>결재 대기<span class="nav-badge" id="pendingBadge" style="display:none">0</span></a></li>
         <li class="nav-item"><a class="nav-link" href="#" data-page="my-docs"><i class="bi bi-folder2-open"></i>내 문서함</a></li>
-        <li class="nav-item"><a class="nav-link" href="#" data-page="all-docs"><i class="bi bi-archive"></i>전체 문서</a></li>
         <li class="nav-item"><a class="nav-link" href="#" data-page="search"><i class="bi bi-search"></i>문서 검색</a></li>
         <hr class="border-secondary mx-3 my-2">
         <li class="nav-item" id="navAdmin" style="display:none"><a class="nav-link" href="#" data-page="admin-users"><i class="bi bi-people"></i>사용자 관리</a></li>
@@ -279,7 +280,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
       </div>
       <div class="d-flex align-items-center gap-2">
         <span id="syncStatusBar"><span class="spinner-border spinner-border-sm"></span>동기화 중...</span>
-        <button class="btn btn-secondary" onclick="refreshCurrentPage()" title="새로고침" style="font-size:18px;padding:6px 18px;line-height:1;font-weight:600"><i class="bi bi-arrow-clockwise me-1"></i>새로고침</button>
+        <button class="btn btn-success" onclick="refreshCurrentPage()" title="새로고침" style="font-size:13px;padding:5px 14px;line-height:1"><i class="bi bi-arrow-clockwise me-1"></i>새로고침</button>
         <div class="dropdown">
           <button class="btn btn-sm btn-light position-relative" data-bs-toggle="dropdown" onclick="loadNotifications()">
             <i class="bi bi-bell"></i>
@@ -288,7 +289,10 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
           <div class="dropdown-menu dropdown-menu-end notif-dropdown p-0" id="notifDropdown">
             <div class="p-3 border-bottom d-flex justify-content-between align-items-center">
               <strong>알림</strong>
-              <button class="btn btn-sm btn-link p-0" onclick="markAllRead()">모두 읽음</button>
+              <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-link p-0" onclick="markAllRead()">모두 읽음</button>
+                <button class="btn btn-sm btn-link p-0 text-danger" onclick="deleteAllNotifications()">전체 삭제</button>
+              </div>
             </div>
             <div id="notifList"><div class="p-4 text-center text-muted">알림이 없습니다.</div></div>
           </div>
@@ -344,7 +348,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
           </div>
           <div class="col-lg-5">
             <div class="card">
-              <div class="card-header d-flex justify-content-between align-items-center"><span>최근 문서</span><a href="#" class="btn btn-sm btn-outline-primary" onclick="navigateTo('all-docs');return false">전체보기</a></div>
+              <div class="card-header d-flex justify-content-between align-items-center"><span>최근 문서</span><a href="#" class="btn btn-sm btn-outline-primary" onclick="navigateTo('search');return false">전체보기</a></div>
               <div class="card-body p-0" id="dashRecentList"><div class="p-4 text-center text-muted">문서가 없습니다.</div></div>
             </div>
           </div>
@@ -411,6 +415,9 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
                 <p>엑셀(.xlsx) 또는 PDF 파일을 드래그하여 놓거나 클릭하세요</p>
                 <input type="file" id="docFileInput" accept=".xlsx,.xls,.pdf" style="display:none">
               </div>
+              <div class="mt-2 p-2 rounded" style="background:#fff8e1;border:1px solid #ffe082;font-size:11px">
+                <i class="bi bi-info-circle text-warning me-1"></i><strong>PDF 업로드 안내:</strong> 결재 승인 시 우측 상단에 결재란이 삽입되며, 원본 하단 약 <strong>15%</strong>가 잘릴 수 있습니다. PDF 원본 문서의 <strong>하단 여백을 충분히(4~5cm 이상)</strong> 확보해 주세요.
+              </div>
               <div id="docFileInfo" class="mt-2" style="display:none">
                 <span class="badge bg-success"><i class="bi bi-check me-1"></i><span id="docFileName"></span></span>
                 <button class="btn btn-sm btn-link text-danger" onclick="clearDocFile()">제거</button>
@@ -455,34 +462,36 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
           <button class="btn btn-sm btn-outline-success" onclick="filterMyDocs('approved',this)">승인</button>
           <button class="btn btn-sm btn-outline-danger" onclick="filterMyDocs('rejected',this)">반려</button>
         </div>
+        <div id="bulkBar-myDocsTbody" style="display:none" class="d-flex align-items-center gap-2 mb-2 px-1">
+          <span class="text-muted small" id="bulkCount-myDocsTbody"></span>
+          <button class="btn btn-sm btn-danger" onclick="bulkDeleteDocs('myDocsTbody')"><i class="bi bi-trash me-1"></i>선택 삭제</button>
+          <button class="btn btn-sm btn-outline-secondary" onclick="clearSelection('myDocsTbody')">취소</button>
+        </div>
         <div class="table-wrap">
-          <table class="table"><thead><tr><th>문서번호</th><th>제목</th><th>문서 종류</th><th>작성자</th><th>작성일</th><th>상태</th><th></th></tr></thead>
-          <tbody id="myDocsTbody"><tr><td colspan="7" class="text-center text-muted py-4">문서가 없습니다.</td></tr></tbody></table>
+          <table class="table"><thead><tr><th style="width:36px"><input type="checkbox" id="selectAll-myDocsTbody" onchange="toggleSelectAll('myDocsTbody')" style="display:none"></th><th>문서번호</th><th>제목</th><th>문서 종류</th><th>작성자</th><th>작성일</th><th>상태</th><th></th></tr></thead>
+          <tbody id="myDocsTbody"><tr><td colspan="8" class="text-center text-muted py-4">문서가 없습니다.</td></tr></tbody></table>
         </div>
       </div>
 
-      <!-- 전체 문서 -->
-      <div id="page-all-docs" class="page-section" style="display:none">
-        <div class="table-wrap">
-          <table class="table"><thead><tr><th>문서번호</th><th>제목</th><th>문서 종류</th><th>작성자</th><th>작성일</th><th>상태</th><th></th></tr></thead>
-          <tbody id="allDocsTbody"><tr><td colspan="7" class="text-center text-muted py-4">문서가 없습니다.</td></tr></tbody></table>
-        </div>
-      </div>
-
-      <!-- 문서 검색 -->
+      <!-- 문서 검색 (전체 문서 + 검색 통합) -->
       <div id="page-search" class="page-section" style="display:none">
-        <div class="card mb-4"><div class="card-body">
-          <div class="row g-3">
+        <div class="card mb-3"><div class="card-body py-2">
+          <div class="row g-2 align-items-end">
             <div class="col-md-4"><input type="text" class="form-control" id="searchQuery" placeholder="문서번호, 제목, 작성자 검색"></div>
-            <div class="col-md-2"><select class="form-select" id="searchStatus"><option value="">전체 상태</option><option value="pending">진행중</option><option value="approved">승인</option><option value="rejected">반려</option></select></div>
+            <div class="col-md-2"><select class="form-select" id="searchStatus"><option value="">전체 상태</option><option value="pending">진행중</option><option value="approved">승인</option><option value="rejected">반려</option><option value="draft">임시저장</option></select></div>
             <div class="col-md-2"><input type="date" class="form-control" id="searchDateFrom"></div>
             <div class="col-md-2"><input type="date" class="form-control" id="searchDateTo"></div>
             <div class="col-md-2"><button class="btn btn-primary w-100" onclick="doSearch()"><i class="bi bi-search me-1"></i>검색</button></div>
           </div>
         </div></div>
+        <div id="bulkBar-searchResultTbody" style="display:none" class="d-flex align-items-center gap-2 mb-2 px-1">
+          <span class="text-muted small" id="bulkCount-searchResultTbody"></span>
+          <button class="btn btn-sm btn-danger" onclick="bulkDeleteDocs('searchResultTbody')"><i class="bi bi-trash me-1"></i>선택 삭제</button>
+          <button class="btn btn-sm btn-outline-secondary" onclick="clearSelection('searchResultTbody')">취소</button>
+        </div>
         <div class="table-wrap">
-          <table class="table"><thead><tr><th>문서번호</th><th>제목</th><th>문서 종류</th><th>작성자</th><th>작성일</th><th>상태</th><th></th></tr></thead>
-          <tbody id="searchResultTbody"><tr><td colspan="7" class="text-center text-muted py-4">검색어를 입력하세요.</td></tr></tbody></table>
+          <table class="table"><thead><tr><th style="width:36px"><input type="checkbox" id="selectAll-searchResultTbody" onchange="toggleSelectAll('searchResultTbody')" style="display:none"></th><th>문서번호</th><th>제목</th><th>문서 종류</th><th>작성자</th><th>작성일</th><th>상태</th><th></th></tr></thead>
+          <tbody id="searchResultTbody"><tr><td colspan="8" class="text-center text-muted py-4">로딩 중...</td></tr></tbody></table>
         </div>
       </div>
 
@@ -493,7 +502,6 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
           <div class="d-flex gap-2">
             <button class="btn btn-outline-secondary btn-sm" onclick="refreshDocDetail()"><i class="bi bi-arrow-clockwise me-1"></i>새로고침</button>
             <button class="btn btn-outline-success btn-sm" id="btnPdf" style="display:none" onclick="handlePdfBtn()"><i class="bi bi-file-pdf me-1"></i>PDF 다운로드</button>
-            <button class="btn btn-outline-warning btn-sm" id="btnSavePdf" style="display:none" onclick="handleSavePdfBtn()"><i class="bi bi-cloud-download me-1"></i>PDF 저장</button>
             <button class="btn btn-danger btn-sm" id="btnDeleteDoc" style="display:none" onclick="confirmDeleteDoc()"><i class="bi bi-trash me-1"></i>삭제</button>
           </div>
         </div>
@@ -533,7 +541,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
         <!-- 결재란 (서명 표시) -->
         <div class="card mb-3">
           <div class="card-header">결재란</div>
-          <div class="card-body d-flex justify-content-end" id="docApprovalHeader"></div>
+          <div class="card-body d-flex justify-content-start" id="docApprovalHeader"></div>
         </div>
 
         <!-- 문서 본문 (iframe) -->
@@ -575,13 +583,16 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
         <div class="card mt-4">
           <div class="card-header d-flex justify-content-between align-items-center">
             <span><i class="bi bi-clock-history me-2"></i>로그인 이력</span>
-            <button class="btn btn-sm btn-outline-secondary" onclick="loadLoginHistory()"><i class="bi bi-arrow-clockwise"></i></button>
+            <div class="d-flex gap-1">
+              <button class="btn btn-sm btn-outline-danger" onclick="deleteAllLoginHistory()" title="전체 삭제"><i class="bi bi-trash me-1"></i>전체 삭제</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="loadLoginHistory()"><i class="bi bi-arrow-clockwise"></i></button>
+            </div>
           </div>
           <div class="card-body p-0">
             <div class="table-responsive">
               <table class="table table-sm mb-0">
-                <thead><tr><th>사용자</th><th>이름</th><th>시각</th><th>IP</th></tr></thead>
-                <tbody id="loginHistoryTbody"><tr><td colspan="4" class="text-center text-muted py-3">불러오기 버튼을 클릭하세요</td></tr></tbody>
+                <thead><tr><th>사용자</th><th>이름</th><th>시각</th><th>IP</th><th style="width:40px"></th></tr></thead>
+                <tbody id="loginHistoryTbody"><tr><td colspan="5" class="text-center text-muted py-3">불러오기 버튼을 클릭하세요</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -717,7 +728,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
       <input type="hidden" id="editUserId">
       <div class="row g-3">
         <div class="col-6"><label class="form-label">아이디 <span class="text-danger">*</span></label><input type="text" class="form-control" id="editUsername"></div>
-        <div class="col-6"><label class="form-label">비밀번호</label><input type="password" class="form-control" id="editPassword" placeholder="미입력시 1234"></div>
+        <div class="col-6"><label class="form-label">비밀번호 <span class="text-danger" id="pwRequired">*</span></label><input type="password" class="form-control" id="editPassword" placeholder="최소 6자 이상"><small class="text-muted" id="pwEditHint" style="display:none">미입력 시 기존 비밀번호 유지</small></div>
         <div class="col-6"><label class="form-label">이름 <span class="text-danger">*</span></label><input type="text" class="form-control" id="editName"></div>
         <div class="col-6"><label class="form-label">이메일</label><input type="email" class="form-control" id="editEmail"></div>
         <div class="col-6"><label class="form-label">부서 <span class="text-danger">*</span></label><input type="text" class="form-control" id="editDept" placeholder="예: 품질관리팀"></div>
@@ -798,7 +809,7 @@ const _HARDCODED_URL = 'https://script.google.com/macros/s/AKfycbyWIoGVpWGCLmTDz
 let API_URL = (_GAS_TEMPLATE_VAL.startsWith('<?') ? '' : _GAS_TEMPLATE_VAL)
               || localStorage.getItem('qa_api_url')
               || _HARDCODED_URL;
-let SESSION_TOKEN = localStorage.getItem('qa_session_token') || '';
+let SESSION_TOKEN = '';  // 항상 명시적 로그인 필요 (localStorage 자동복원 안함)
 let CURRENT_USER = null;
 let ALL_USERS = [];
 let currentDocId = null;
@@ -910,6 +921,7 @@ function showToast(msg, type = 'success') {
   const icons = { success:'check-circle-fill', danger:'exclamation-triangle-fill', warning:'exclamation-circle-fill', info:'info-circle-fill' };
   const t = document.createElement('div');
   t.className = `toast show align-items-center text-bg-${type} border-0`;
+  t.style.maxWidth = '420px';
   t.innerHTML = `<div class="d-flex"><div class="toast-body"><i class="bi bi-${icons[type]||'info-circle-fill'} me-2"></i>${msg}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>`;
   c.appendChild(t);
   setTimeout(() => t.remove(), 4000);
@@ -1008,13 +1020,13 @@ function navigateTo(page) {
   document.querySelectorAll('.sidebar-nav .nav-link').forEach(el => el.classList.remove('active'));
   const navLink = document.querySelector(`.sidebar-nav .nav-link[data-page="${page}"]`);
   if (navLink) navLink.classList.add('active');
-  const titles = { 'dashboard':'대시보드','doc-create':'새 문서 작성','pending-approval':'결재 대기','my-docs':'내 문서함','all-docs':'전체 문서','search':'문서 검색','doc-detail':'문서 상세','admin-users':'사용자 관리','admin-templates':'템플릿 관리','admin-settings':'설정' };
+  const titles = { 'dashboard':'대시보드','doc-create':'새 문서 작성','pending-approval':'결재 대기','my-docs':'내 문서함','search':'문서 검색','doc-detail':'문서 상세','admin-users':'사용자 관리','admin-templates':'템플릿 관리','admin-settings':'설정' };
   document.getElementById('pageTitle').textContent = titles[page] || '';
 
   if (page === 'dashboard') loadDashboard();
   else if (page === 'pending-approval') loadPendingApproval();
   else if (page === 'my-docs') loadMyDocs();
-  else if (page === 'all-docs') loadAllDocs();
+  else if (page === 'search') loadAllDocsToSearch();
   else if (page === 'admin-users') loadUsers();
   else if (page === 'admin-templates') loadTemplates();
   else if (page === 'admin-settings') loadSettings();
@@ -1122,25 +1134,35 @@ function filterMyDocs(status, btn) {
   renderDocTable('myDocsTbody', docs, true);
 }
 
-async function loadAllDocs() {
+async function loadAllDocsToSearch() {
   const cached = lsGet('all_docs');
-  if (cached) renderDocTable('allDocsTbody', cached, true);
+  if (cached) renderDocTable('searchResultTbody', cached, true);
   try {
     const result = await api('doc_list', {});
-    if (result.success) { lsPut('all_docs', result.documents); renderDocTable('allDocsTbody', result.documents, true); }
+    if (result.success) { lsPut('all_docs', result.documents); renderDocTable('searchResultTbody', result.documents, true); }
   } catch(ex) {}
 }
 
 function renderDocTable(tbodyId, docs, showCreator) {
   const tbody = document.getElementById(tbodyId);
-  if (!docs.length) { tbody.innerHTML = `<tr><td colspan="${showCreator?7:6}" class="text-center text-muted py-4">문서가 없습니다.</td></tr>`; return; }
+  const isAdmin = CURRENT_USER && CURRENT_USER.role === 'admin';
+  const colSpan = 8; // 체크박스 포함
+  // 전체선택 체크박스 표시/초기화
+  const selectAllCb = document.getElementById('selectAll-' + tbodyId);
+  if (selectAllCb) { selectAllCb.style.display = isAdmin ? '' : 'none'; selectAllCb.checked = false; selectAllCb.indeterminate = false; }
+  updateBulkDeleteBar(tbodyId);
+  if (!docs.length) { tbody.innerHTML = `<tr><td colspan="${colSpan}" class="text-center text-muted py-4">문서가 없습니다.</td></tr>`; return; }
   tbody.innerHTML = docs.map(d => {
     const rejCommentHtml = (d.status === 'rejected' && d.rejection_comment)
       ? `<br><small class="text-danger" style="font-size:10px"><i class="bi bi-x-circle me-1"></i>${esc(d.rejection_by ? d.rejection_by+': ' : '')}${esc(d.rejection_comment.length>40 ? d.rejection_comment.substring(0,40)+'…' : d.rejection_comment)}</small>` : '';
     const appCommentHtml = d.approval_comment
       ? `<br><small class="text-success" style="font-size:10px"><i class="bi bi-check-circle me-1"></i>${esc(d.approval_by ? d.approval_by+': ' : '')}${esc(d.approval_comment.length>40 ? d.approval_comment.substring(0,40)+'…' : d.approval_comment)}</small>` : '';
     const commentHtml = rejCommentHtml + appCommentHtml;
+    const checkboxTd = isAdmin
+      ? `<td><input type="checkbox" class="doc-check" data-tbody="${tbodyId}" value="${d.id}" data-title="${esc(d.title)}" onchange="updateBulkDeleteBar('${tbodyId}')"></td>`
+      : '<td></td>';
     return `<tr>
+      ${checkboxTd}
       <td><span class="fw-semibold">${esc(d.doc_number)}</span></td>
       <td>${esc(d.title)}${commentHtml}</td>
       <td>${categoryBadge(d.category)}</td>
@@ -1150,6 +1172,55 @@ function renderDocTable(tbodyId, docs, showCreator) {
       <td><button class="btn btn-sm btn-outline-primary" onclick="viewDocument('${d.id}')"><i class="bi bi-eye"></i></button></td>
     </tr>`;
   }).join('');
+}
+
+function toggleSelectAll(tbodyId) {
+  const cb = document.getElementById('selectAll-' + tbodyId);
+  document.querySelectorAll(`.doc-check[data-tbody="${tbodyId}"]`).forEach(c => c.checked = cb.checked);
+  updateBulkDeleteBar(tbodyId);
+}
+
+function updateBulkDeleteBar(tbodyId) {
+  const checked = document.querySelectorAll(`.doc-check[data-tbody="${tbodyId}"]:checked`);
+  const all = document.querySelectorAll(`.doc-check[data-tbody="${tbodyId}"]`);
+  const bar = document.getElementById('bulkBar-' + tbodyId);
+  const countEl = document.getElementById('bulkCount-' + tbodyId);
+  const selectAll = document.getElementById('selectAll-' + tbodyId);
+  if (bar) bar.style.display = checked.length > 0 ? '' : 'none';
+  if (countEl) countEl.textContent = checked.length + '개 선택됨';
+  if (selectAll) {
+    selectAll.indeterminate = checked.length > 0 && checked.length < all.length;
+    selectAll.checked = all.length > 0 && checked.length === all.length;
+  }
+}
+
+function clearSelection(tbodyId) {
+  document.querySelectorAll(`.doc-check[data-tbody="${tbodyId}"]`).forEach(c => c.checked = false);
+  const selectAll = document.getElementById('selectAll-' + tbodyId);
+  if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
+  updateBulkDeleteBar(tbodyId);
+}
+
+async function bulkDeleteDocs(tbodyId) {
+  const checked = [...document.querySelectorAll(`.doc-check[data-tbody="${tbodyId}"]:checked`)];
+  if (!checked.length) return;
+  const titles = checked.map(c => c.dataset.title).join(', ');
+  const brief = titles.length > 60 ? titles.substring(0, 60) + '…' : titles;
+  if (!confirm(`${checked.length}개 문서를 삭제하시겠습니까?\n${brief}\n\n삭제 후 복구할 수 없습니다.`)) return;
+  showLoading('삭제 중...');
+  const ids = checked.map(c => c.value);
+  try {
+    const result = await api('doc_batch_delete', { ids: ids.join(',') });
+    hideLoading();
+    if (result.success) {
+      showToast(`${result.deleted_count || ids.length}개 삭제되었습니다.`);
+      lsPut('all_docs', null); lsPut('my_docs', null);
+      if (currentPage === 'my-docs') loadMyDocs();
+      else loadAllDocsToSearch();
+    } else {
+      showToast(result.error || '삭제 실패', 'danger');
+    }
+  } catch(ex) { hideLoading(); showToast('오류: ' + ex.message, 'danger'); }
 }
 
 async function doSearch() {
@@ -1361,12 +1432,13 @@ async function viewDocument(docId) {
     document.getElementById('detailCategory').innerHTML = categoryBadge(doc.category);
     document.getElementById('detailStatus').innerHTML = statusBadge(doc.status) + (doc.status === 'approved' ? ' <span class="badge bg-secondary" style="font-size:10px"><i class="bi bi-lock me-1"></i>수정불가</span>' : '');
 
-    const canDelete = (String(doc.creator_id) === String(CURRENT_USER.id) || CURRENT_USER.role === 'admin') && doc.status !== 'approved';
+    // 관리자는 승인 문서도 삭제 가능, 일반 사용자는 본인 문서 + 미승인만
+    const canDelete = CURRENT_USER.role === 'admin'
+      || (String(doc.creator_id) === String(CURRENT_USER.id) && doc.status !== 'approved');
     document.getElementById('btnDeleteDoc').style.display = canDelete ? 'inline-block' : 'none';
     // PDF 버튼: 승인된 문서에서 pdf_url 유무에 따라 다운로드/저장 버튼 표시
     // PDF 다운로드: 승인 완료 시 또는 결재 진행중이더라도 표시 (스탬프 포함 PDF 생성)
     document.getElementById('btnPdf').style.display = (doc.status === 'approved' || doc.status === 'pending') ? 'inline-block' : 'none';
-    document.getElementById('btnSavePdf').style.display = (doc.status === 'approved' && !doc.pdf_url) ? 'inline-block' : 'none';
 
     // 승인일 표시
     const dateStamp = document.getElementById('approvalDateStamp');
@@ -1501,7 +1573,7 @@ function renderApprovalStampTable(approvals, doc) {
     html += '</td>';
   });
   html += '</tr><tr>';
-  steps.forEach(a => { html += `<td style="font-size:10px">${esc(a.approver_dept || '')}<br><strong>${esc(a.approver_name)}</strong><br>${esc(a.approver_position || '')}</td>`; });
+  steps.forEach(a => { const namePos = [a.approver_name, a.approver_position].filter(Boolean).join(' '); html += `<td style="font-size:10px">${esc(a.approver_dept || '')}<br><strong>${esc(namePos)}</strong></td>`; });
   html += '</tr><tr>';
   steps.forEach(a => { html += `<td style="font-size:9px">${a.signed_at ? formatDate(a.signed_at) : ''}</td>`; });
   html += '</tr></table>';
@@ -1547,45 +1619,53 @@ async function doReject() {
 }
 
 async function handlePdfBtn() {
-  // 이미 저장된 PDF가 있으면 바로 열기
-  if (currentDocData && currentDocData.pdf_url) {
-    window.open(currentDocData.pdf_url, '_blank');
-    return;
-  }
-  // 없으면 결재 스탬프 포함 PDF 생성 후 다운로드
-  showLoading('PDF 생성 중...');
-  try {
-    const result = await api('generate_pdf', { doc_id: currentDocId });
-    hideLoading();
-    if (result.success && result.pdf_base64) {
-      const byteChars = atob(result.pdf_base64);
-      const byteNums = new Array(byteChars.length);
-      for (let i = 0; i < byteChars.length; i++) byteNums[i] = byteChars.charCodeAt(i);
-      const blob = new Blob([new Uint8Array(byteNums)], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = result.file_name || 'document.pdf';
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } else {
-      showToast(result.error || 'PDF 생성 실패', 'danger');
-    }
-  } catch(ex) { hideLoading(); showToast('오류: ' + ex.message, 'danger'); }
-}
+  const isApproved = currentDocData && currentDocData.status === 'approved';
 
-async function handleSavePdfBtn() {
-  showLoading('PDF 저장 중...');
-  try {
-    const result = await api('regen_pdf', { doc_id: currentDocId });
-    hideLoading();
-    if (result.success) {
-      showToast('PDF가 구글드라이브에 저장되었습니다.');
-      if (result.pdf_url) window.open(result.pdf_url, '_blank');
-      viewDocument(currentDocId); // 버튼 상태 갱신
-    } else {
-      showToast(result.error || 'PDF 저장 실패', 'danger');
+  if (isApproved) {
+    // 승인 완료: 이미 Drive에 저장된 경우 바로 열기
+    if (currentDocData.pdf_url) {
+      window.open(currentDocData.pdf_url, '_blank');
+      return;
     }
-  } catch(ex) { hideLoading(); showToast('오류: ' + ex.message, 'danger'); }
+    // 저장 안 된 경우: Drive에 저장 후 열기
+    showLoading('PDF 저장 중...');
+    try {
+      const result = await api('regen_pdf', { doc_id: currentDocId });
+      hideLoading();
+      if (result.success) {
+        showToast('PDF가 구글드라이브에 저장되었습니다.');
+        if (result.pdf_url) window.open(result.pdf_url, '_blank');
+        viewDocument(currentDocId);
+      } else {
+        showToast(result.error || 'PDF 저장 실패', 'danger');
+      }
+    } catch(ex) { hideLoading(); showToast('오류: ' + ex.message, 'danger'); }
+
+  } else {
+    // 결재 진행중: 스탬프 포함 PDF 생성 후 브라우저 다운로드
+    showLoading('PDF 생성 중...');
+    try {
+      const result = await api('generate_pdf', { doc_id: currentDocId });
+      hideLoading();
+      if (result.success && result.pdf_base64) {
+        const byteChars = atob(result.pdf_base64);
+        const byteNums = new Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) byteNums[i] = byteChars.charCodeAt(i);
+        const blob = new Blob([new Uint8Array(byteNums)], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = result.file_name || 'document.pdf';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        // PDF 업로드 문서의 하단 클립 안내
+        if (result.clip_percent) {
+          showToast('PDF 원본 문서의 하단 약 ' + result.clip_percent + '%가 결재란 영역으로 인해 잘립니다. 원본 PDF 하단 여백을 충분히 확보해 주세요.', 'warning');
+        }
+      } else {
+        showToast(result.error || 'PDF 생성 실패', 'danger');
+      }
+    } catch(ex) { hideLoading(); showToast('오류: ' + ex.message, 'danger'); }
+  }
 }
 
 async function confirmDeleteDoc() {
@@ -1594,8 +1674,11 @@ async function confirmDeleteDoc() {
   try {
     const result = await api('doc_delete', { id: currentDocId });
     hideLoading();
-    if (result.success) { showToast('삭제되었습니다.'); goBack(); }
-    else showToast(result.error, 'danger');
+    if (result.success) {
+      showToast('삭제되었습니다.');
+      lsPut('all_docs', null); lsPut('my_docs', null); // 모든 캐시 무효화
+      goBack();
+    } else showToast(result.error, 'danger');
   } catch(ex) { hideLoading(); }
 }
 
@@ -1630,6 +1713,8 @@ function showAddUserModal() {
   document.getElementById('editUsername').disabled = false;
   document.getElementById('editRole').value = 'user';
   document.getElementById('sigPreview').style.display = 'none';
+  document.getElementById('pwRequired').style.display = 'inline';
+  document.getElementById('pwEditHint').style.display = 'none';
   uploadedSignatureData = null;
   new bootstrap.Modal(document.getElementById('userModal')).show();
 }
@@ -1640,6 +1725,8 @@ function editUser(u) {
   document.getElementById('editUsername').value = u.username;
   document.getElementById('editUsername').disabled = true;
   document.getElementById('editPassword').value = '';
+  document.getElementById('pwRequired').style.display = 'none';
+  document.getElementById('pwEditHint').style.display = 'inline';
   document.getElementById('editName').value = u.name;
   document.getElementById('editEmail').value = u.email || '';
   document.getElementById('editDept').value = u.department;
@@ -1658,6 +1745,8 @@ async function saveUser() {
   const id = document.getElementById('editUserId').value;
   const data = { username: document.getElementById('editUsername').value.trim(), name: document.getElementById('editName').value.trim(), email: document.getElementById('editEmail').value.trim(), department: document.getElementById('editDept').value.trim(), position: document.getElementById('editPosition').value.trim(), role: document.getElementById('editRole').value, password: document.getElementById('editPassword').value, webhook_url: document.getElementById('editWebhookUrl').value.trim() };
   if (!data.username || !data.name || !data.department) { showToast('아이디, 이름, 부서는 필수입니다.', 'warning'); return; }
+  if (!id && (!data.password || data.password.length < 6)) { showToast('비밀번호는 최소 6자 이상이어야 합니다.', 'warning'); return; }
+  if (id && data.password && data.password.length < 6) { showToast('비밀번호는 최소 6자 이상이어야 합니다.', 'warning'); return; }
   showLoading('저장 중...');
   try {
     let result;
@@ -1945,8 +2034,13 @@ async function loadNotifications() {
     if (!result.notifications.length) { list.innerHTML = '<div class="p-4 text-center text-muted">알림이 없습니다.</div>'; return; }
     list.innerHTML = result.notifications.map(n => {
       const ic = n.type==='approval_request' ? 'bi-inbox text-warning' : n.type==='approved' ? 'bi-check-circle text-success' : n.type==='rejected' ? 'bi-x-circle text-danger' : 'bi-bell text-info';
-      return `<div class="notif-item ${n.read==='N'?'unread':''}" onclick="handleNotifClick('${n.id}','${n.doc_id}')">
-        <div class="d-flex gap-2"><i class="bi ${ic}" style="font-size:15px;margin-top:2px"></i><div><div class="notif-msg">${esc(n.message)}</div><div class="notif-time">${formatDateTime(n.created_at)}</div></div></div></div>`;
+      return `<div class="notif-item ${n.read==='N'?'unread':''}" style="position:relative">
+        <div class="d-flex gap-2" onclick="handleNotifClick('${n.id}','${n.doc_id}')" style="cursor:pointer">
+          <i class="bi ${ic}" style="font-size:15px;margin-top:2px"></i>
+          <div style="flex:1"><div class="notif-msg">${esc(n.message)}</div><div class="notif-time">${formatDateTime(n.created_at)}</div></div>
+        </div>
+        <button class="btn btn-sm p-0 text-muted" onclick="event.stopPropagation();deleteNotification('${n.id}')" style="position:absolute;top:8px;right:8px;font-size:12px" title="삭제"><i class="bi bi-x-lg"></i></button>
+      </div>`;
     }).join('');
     const b = document.getElementById('notifBadge');
     if (result.unread_count > 0) { b.textContent = result.unread_count; b.style.display = 'inline'; }
@@ -1961,6 +2055,23 @@ async function handleNotifClick(notifId, docId) {
 
 async function markAllRead() {
   try { await api('notification_read', { id: 'all' }); document.getElementById('notifBadge').style.display = 'none'; loadNotifications(); } catch(ex) {}
+}
+
+async function deleteNotification(notifId) {
+  try {
+    await api('notification_delete', { id: notifId });
+    loadNotifications();
+  } catch(ex) {}
+}
+
+async function deleteAllNotifications() {
+  if (!confirm('모든 알림을 삭제하시겠습니까?')) return;
+  try {
+    await api('notification_delete', { id: 'all' });
+    document.getElementById('notifBadge').style.display = 'none';
+    loadNotifications();
+    showToast('알림이 모두 삭제되었습니다.');
+  } catch(ex) {}
 }
 
 // ============================================================
@@ -2230,17 +2341,33 @@ async function saveDocTypePaths() {
 async function loadLoginHistory() {
   const tbody = document.getElementById('loginHistoryTbody');
   if (!tbody) return;
-  tbody.innerHTML = '<tr><td colspan="4" class="text-center py-3"><div class="spinner-border spinner-border-sm"></div></td></tr>';
+  tbody.innerHTML = '<tr><td colspan="5" class="text-center py-3"><div class="spinner-border spinner-border-sm"></div></td></tr>';
   try {
     const result = await api('login_history', {});
-    if (!result.success) { tbody.innerHTML = `<tr><td colspan="4" class="text-center text-danger py-3">${esc(result.error)}</td></tr>`; return; }
-    if (!result.history.length) { tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-3">이력이 없습니다.</td></tr>'; return; }
+    if (!result.success) { tbody.innerHTML = `<tr><td colspan="5" class="text-center text-danger py-3">${esc(result.error)}</td></tr>`; return; }
+    if (!result.history.length) { tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">이력이 없습니다.</td></tr>'; return; }
     tbody.innerHTML = result.history.map(h =>
-      `<tr><td>${esc(h.username)}</td><td>${esc(h.name)}</td><td style="font-size:12px">${formatDateTime(h.login_at)}</td><td style="font-size:12px">${esc(h.ip || '-')}</td></tr>`
+      `<tr><td>${esc(h.username)}</td><td>${esc(h.name)}</td><td style="font-size:12px">${formatDateTime(h.login_at)}</td><td style="font-size:12px">${esc(h.ip || '-')}</td><td><button class="btn btn-sm p-0 text-muted" onclick="deleteLoginHistoryItem('${h.id}')" title="삭제"><i class="bi bi-x-lg" style="font-size:11px"></i></button></td></tr>`
     ).join('');
   } catch(ex) {
-    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-danger py-3">로딩 오류</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-3">로딩 오류</td></tr>';
   }
+}
+
+async function deleteLoginHistoryItem(id) {
+  try {
+    await api('login_history_delete', { id: id });
+    loadLoginHistory();
+  } catch(ex) {}
+}
+
+async function deleteAllLoginHistory() {
+  if (!confirm('모든 로그인 이력을 삭제하시겠습니까?')) return;
+  try {
+    await api('login_history_delete', { id: 'all' });
+    loadLoginHistory();
+    showToast('로그인 이력이 모두 삭제되었습니다.');
+  } catch(ex) {}
 }
 
 // ============================================================

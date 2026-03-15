@@ -126,6 +126,7 @@ function doPost(e) {
       case 'doc_create': result = createDocument(data); break;
       case 'doc_detail': result = getDocumentDetail(data); break;
       case 'doc_delete': result = deleteDocument(data); break;
+      case 'doc_batch_delete': result = batchDeleteDocuments(data); break;
       case 'doc_file': result = getDocumentFile(data); break;
       case 'doc_search': result = searchDocuments(data); break;
 
@@ -140,6 +141,7 @@ function doPost(e) {
 
       case 'notifications': result = getNotifications(data); break;
       case 'notification_read': result = markNotificationRead(data); break;
+      case 'notification_delete': result = deleteNotification(data); break;
 
       case 'settings_get': result = getSettings(); break;
       case 'settings_update': result = updateSettings(data); break;
@@ -150,6 +152,7 @@ function doPost(e) {
       case 'bom_qa_upload': result = bomQaUpload(data); break;
       case 'bom_qa_search': result = bomQaSearch(data); break;
       case 'login_history': result = getLoginHistory(data); break;
+      case 'login_history_delete': result = deleteLoginHistory(data); break;
 
       default: result = { success: false, error: '알 수 없는 요청: ' + action };
     }
@@ -286,6 +289,9 @@ function handleLogout(data) {
 
 function handleChangePassword(data) {
   const user = getSessionUser(data);
+  if (!data.new_password || String(data.new_password).length < 6) {
+    return { success: false, error: '새 비밀번호는 최소 6자 이상이어야 합니다.' };
+  }
   const sh = getSheet('사용자');
   const rowIdx = findRowIndex(sh, 0, user.id);
   if (rowIdx < 0) return { success: false, error: '사용자를 찾을 수 없습니다.' };
@@ -321,6 +327,12 @@ function getUsers(data) {
 function addUser(data) {
   const admin = getSessionUser(data);
   if (admin.role !== 'admin') return { success: false, error: '관리자 권한이 필요합니다.' };
+  if (!data.password || String(data.password).length < 6) {
+    return { success: false, error: '비밀번호는 최소 6자 이상이어야 합니다.' };
+  }
+  if (!data.username || String(data.username).trim().length < 2) {
+    return { success: false, error: '아이디는 최소 2자 이상이어야 합니다.' };
+  }
   const sh = getSheet('사용자');
   const users = sheetToObjects(sh);
   if (users.find(u => u.username === data.username && u.status === 'active')) {
@@ -328,7 +340,7 @@ function addUser(data) {
   }
   const id = generateId();
   sh.appendRow([
-    id, data.username, hashPassword(data.password || '1234'),
+    id, data.username, hashPassword(data.password),
     data.name, data.department, data.position, data.role || 'user',
     '', new Date().toISOString(), 'active', data.email || '', data.webhook_url || ''
   ]);
@@ -635,12 +647,31 @@ function deleteDocument(data) {
   if (creatorId !== String(user.id) && user.role !== 'admin') {
     return { success: false, error: '삭제 권한이 없습니다.' };
   }
-  if (status === 'approved') {
+  // 관리자는 승인 완료 문서도 삭제 가능, 일반 사용자는 불가
+  if (status === 'approved' && user.role !== 'admin') {
     return { success: false, error: '승인 완료된 문서는 삭제할 수 없습니다.' };
   }
   sh.getRange(rowIdx, 9).setValue('deleted');
   SpreadsheetApp.flush();
   return { success: true };
+}
+
+function batchDeleteDocuments(data) {
+  const user = getSessionUser(data);
+  if (user.role !== 'admin') return { success: false, error: '관리자만 일괄 삭제할 수 있습니다.' };
+  const ids = Array.isArray(data.ids) ? data.ids : String(data.ids).split(',');
+  if (!ids.length) return { success: false, error: '삭제할 문서가 없습니다.' };
+  const sh = getSheet('문서');
+  let deleted = 0;
+  ids.forEach(function(id) {
+    const rowIdx = findRowIndex(sh, 0, String(id).trim());
+    if (rowIdx >= 0) {
+      sh.getRange(rowIdx, 9).setValue('deleted');
+      deleted++;
+    }
+  });
+  SpreadsheetApp.flush();
+  return { success: true, deleted_count: deleted };
 }
 
 function getDocumentFile(data) {
@@ -959,21 +990,16 @@ function autoSavePdf(docId, docRowIdx, docSh) {
   const stampApprovals = hasAuthorStep ? approvals : [creatorInfo].concat(approvals);
 
   if (origMime === 'application/pdf') {
-    // PDF는 직접 결재란 삽입 불가 → 원본 복사
-    const blob = originalFile.getBlob().setName(fileName);
-    savedFile = targetFolder.createFile(blob);
+    // PDF 원본: Docs 변환 방식으로 결재란 삽입 (실패 시 에러 전파)
+    const pdfResult = buildPdfBlobWithDocStamp(fileId, stampApprovals, fileName, root);
+    savedFile = targetFolder.createFile(pdfResult.blob);
   } else {
     // Excel → Google Sheets 변환 → 결재란 삽입 → PDF 변환
     let tempFileId = null;
     try {
-      // Drive API로 Excel을 Google Sheets 형식으로 변환 복사
-      const resource = {
-        title: 'temp_stamp_' + docId,
-        mimeType: 'application/vnd.google-apps.spreadsheet',
-        parents: [{ id: root.getId() }]
-      };
-      const insertedFile = Drive.Files.copy(resource, fileId, { convert: true });
-      tempFileId = insertedFile.id;
+      // multipart upload로 Excel → Sheets 변환 (Advanced Drive Service 불필요)
+      tempFileId = convertFileToSheets(fileId, 'temp_stamp_' + docId, root.getId());
+      Utilities.sleep(2000); // 변환 완료 대기
 
       const ss = SpreadsheetApp.openById(tempFileId);
       const sheet = ss.getSheets()[0];
@@ -981,31 +1007,12 @@ function autoSavePdf(docId, docRowIdx, docSh) {
       // ── 결재란 삽입 (우측 상단) ──
       const printRange = embedApprovalStamp(sheet, stampApprovals);
       SpreadsheetApp.flush();
+      Utilities.sleep(1500); // 이미지 삽입 완료 대기
 
-      // PDF 변환 (명시적 인쇄 범위 지정으로 1페이지 보장)
+      // PDF 변환
       const pdfBlob = exportSheetAsPdf(ss, fileName, printRange);
       savedFile = targetFolder.createFile(pdfBlob);
-    } catch(convErr) {
-      Logger.log('결재란+PDF 변환 실패: ' + convErr.message);
-      // fallback: Drive API 없으면 makeCopy 시도
-      let tempFile2 = null;
-      try {
-        tempFile2 = originalFile.makeCopy('temp_pdf_' + docId, root);
-        const ss2 = SpreadsheetApp.open(tempFile2);
-        const printRange2 = embedApprovalStamp(ss2.getSheets()[0], stampApprovals);
-        SpreadsheetApp.flush();
-        const pdfBlob2 = exportSheetAsPdf(ss2, fileName, printRange2);
-        savedFile = targetFolder.createFile(pdfBlob2);
-      } catch(e2) {
-        Logger.log('fallback PDF 변환도 실패: ' + e2.message);
-        const origExt = originalFile.getName().split('.').pop();
-        const origFileName = docNumber + '_' + docTitle + '.' + origExt;
-        savedFile = targetFolder.createFile(originalFile.getBlob().setName(origFileName));
-      } finally {
-        if (tempFile2) { try { tempFile2.setTrashed(true); } catch(e) {} }
-      }
     } finally {
-      // 임시 Google Sheets 파일 삭제
       if (tempFileId) { try { DriveApp.getFileById(tempFileId).setTrashed(true); } catch(e) {} }
     }
   }
@@ -1067,15 +1074,15 @@ function embedApprovalStamp(sheet, approvals) {
 
   // 결재란 열 너비 (새 열에만 적용)
   for (let i = 0; i < stepCount; i++) {
-    sheet.setColumnWidth(startCol + i, 72);
+    sheet.setColumnWidth(startCol + i, 87);
   }
 
-  // 결재란 행 높이 (줄임 — 서명 칸 축소)
-  sheet.setRowHeight(1, 18);   // 단계명
-  sheet.setRowHeight(2, 26);   // 서명 상단
-  sheet.setRowHeight(3, 26);   // 서명 하단
-  sheet.setRowHeight(4, 26);   // 이름/부서/직책
-  sheet.setRowHeight(5, 14);   // 결재일
+  // 결재란 행 높이 (20% 증가)
+  sheet.setRowHeight(1, 22);   // 단계명
+  sheet.setRowHeight(2, 31);   // 서명 상단
+  sheet.setRowHeight(3, 31);   // 서명 하단
+  sheet.setRowHeight(4, 31);   // 이름/부서/직책
+  sheet.setRowHeight(5, 17);   // 결재일
 
   // ── Row 1: 단계명 헤더 ──
   for (let i = 0; i < stepCount; i++) {
@@ -1098,10 +1105,11 @@ function embedApprovalStamp(sheet, approvals) {
       let sigInserted = false;
       if (a.signature_file_id) {
         try {
-          const sigBlob = DriveApp.getFileById(a.signature_file_id).getBlob();
-          sheet.insertImage(sigBlob, col, 2).setWidth(55).setHeight(42);
+          const sigFile = DriveApp.getFileById(a.signature_file_id);
+          const sigBlob = sigFile.getBlob().setContentType(sigFile.getMimeType() || 'image/png');
+          sheet.insertImage(sigBlob, col, 2).setWidth(66).setHeight(50);
           sigInserted = true;
-        } catch(e) {}
+        } catch(e) { Logger.log('서명 이미지 삽입 실패(col=' + col + '): ' + e.message); }
       }
       if (!sigInserted) {
         sheet.getRange(2, col).setValue(a.approver_name || '')
@@ -1114,10 +1122,11 @@ function embedApprovalStamp(sheet, approvals) {
   for (let i = 0; i < stepCount; i++) {
     const col = startCol + i;
     const a = approvals[i];
+    const nameStr = [a.approver_name, a.approver_position].filter(Boolean).join(' ');
     sheet.getRange(4, col)
-      .setValue((a.approver_dept || '') + '\n' + (a.approver_name || '') + '\n' + (a.approver_position || ''))
+      .setValue(nameStr)
       .setFontSize(7).setHorizontalAlignment('center').setVerticalAlignment('middle')
-      .setWrap(true);
+      .setWrap(false);
   }
 
   // ── Row 5: 결재일 ──
@@ -1136,47 +1145,45 @@ function embedApprovalStamp(sheet, approvals) {
   // ── 메모(Threaded comment 포함) 전체 삭제 → 2페이지 원인 차단 ──
   try { sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearNote(); } catch(e) {}
 
-  // ── 인쇄 범위 초과 행 삭제 (변환된 comment 텍스트 행 제거) ──
+  // ── 시트 트리밍: 인쇄 범위 밖의 행/열 삭제 → 빈 영역이 없어 scale=4 정확히 동작 ──
   const totalRows = STAMP_ROWS + contentLastRow;
   const maxRows = sheet.getMaxRows();
-  if (maxRows > totalRows + 1) {
+  if (maxRows > totalRows) {
     try { sheet.deleteRows(totalRows + 1, maxRows - totalRows); } catch(e) {}
   }
+  const maxCols = sheet.getMaxColumns();
+  if (maxCols > endCol) {
+    try { sheet.deleteColumns(endCol + 1, maxCols - endCol); } catch(e) {}
+  }
 
-  // PDF 인쇄 범위 반환 (0-indexed): 문서 전체 너비 + 결재란 열 포함
-  return {
-    r1: 0,
-    c1: 0,
-    r2: totalRows - 1,
-    c2: endCol - 1
-  };
+  // 시트 자체를 트리밍했으므로 명시적 인쇄 범위 불필요 → null 반환
+  return null;
 }
 
 // ========== A4 한 페이지 PDF 내보내기 ==========
 // printRange: { r1, c1, r2, c2 } (0-indexed) — 지정 시 해당 범위만 출력
 function exportSheetAsPdf(ss, fileName, printRange) {
   const sheetId = ss.getSheets()[0].getSheetId();
+  // scale=4 (Fit to Page): 시트 전체를 A4 한 장에 맞춤
+  // fitw/fith는 scale=4와 충돌하므로 제거
+  // 시트를 미리 트리밍했으므로 r1/c1/r2/c2 불필요
   let url = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export?' +
     'format=pdf' +
     '&size=A4' +
     '&portrait=true' +
-    '&scale=4' +           // 4 = "한 페이지에 맞춤(Fit to page)"
-    '&fitw=true' +
-    '&fith=true' +         // 세로도 페이지에 맞춤 (2페이지 방지)
+    '&scale=4' +           // Fit to Page (가로+세로 모두 A4에 맞춤)
     '&sheetnames=false' +
     '&gridlines=false' +
     '&printtitle=false' +
-    '&pagenumbers=false' + // 페이지 번호 제거
-    '&notes=false' +       // 메모 제거 (2페이지 원인 차단)
-    '&horizontal_alignment=CENTER' + // 가로 가운데 정렬
-    '&vertical_alignment=TOP' +      // 세로 상단 정렬 (내용 위에서 시작)
-    '&top_margin=0.4' +
-    '&bottom_margin=0.4' +
-    '&left_margin=0.4' +
-    '&right_margin=0.4' +
+    '&pagenumbers=false' +
+    '&notes=false' +
+    '&top_margin=0.5' +
+    '&bottom_margin=0.5' +
+    '&left_margin=0.5' +
+    '&right_margin=0.5' +
     '&gid=' + sheetId;
 
-  // 명시적 인쇄 범위 (빈 행/열 제외하여 1페이지 보장)
+  // 시트 트리밍 후에도 명시적 범위가 전달된 경우 사용 (하위 호환)
   if (printRange) {
     url += '&r1=' + printRange.r1 + '&c1=' + printRange.c1 +
            '&r2=' + printRange.r2 + '&c2=' + printRange.c2;
@@ -1194,12 +1201,245 @@ function exportSheetAsPdf(ss, fileName, printRange) {
   return response.getBlob().setName(fileName);
 }
 
+// ========== 파일을 Google Sheets 형식으로 변환 (multipart upload) ==========
+// Drive Advanced Service 없이 Excel/CSV → Sheets 변환
+function convertFileToSheets(fileId, tempName, parentId) {
+  var token = ScriptApp.getOAuthToken();
+  var originalFile = DriveApp.getFileById(fileId);
+  var originalBlob = originalFile.getBlob();
+  var originalBytes = originalBlob.getBytes();
+  var originalMime = originalBlob.getContentType() || 'application/octet-stream';
+
+  var boundary = 'boundary' + Utilities.getUuid().replace(/-/g, '');
+  var metadata = JSON.stringify({
+    name: tempName,
+    mimeType: 'application/vnd.google-apps.spreadsheet',
+    parents: [parentId]
+  });
+
+  // multipart body (binary safe)
+  var headerBytes = Utilities.newBlob(
+    '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' +
+    metadata + '\r\n--' + boundary + '\r\nContent-Type: ' + originalMime + '\r\n\r\n'
+  ).getBytes();
+  var footerBytes = Utilities.newBlob('\r\n--' + boundary + '--').getBytes();
+
+  var bodyBytes = [].concat(headerBytes).concat(originalBytes).concat(footerBytes);
+
+  var resp = UrlFetchApp.fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+    {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token },
+      contentType: 'multipart/related; boundary=' + boundary,
+      payload: bodyBytes,
+      muteHttpExceptions: true
+    }
+  );
+
+  if (resp.getResponseCode() !== 200) {
+    throw new Error('파일→Sheets 변환 실패(' + resp.getResponseCode() + '): ' + resp.getContentText().substring(0, 200));
+  }
+  return JSON.parse(resp.getContentText()).id;
+}
+
+// ========== PDF 원본 결재란 삽입 (Google Sheets 방식) ==========
+// Slides API 불필요 — 이미 동작 중인 SpreadsheetApp만 사용
+// 1) Drive thumbnail로 PDF 1페이지 이미지를 가져옴
+// 2) 빈 Google Sheets에 결재란(우측 상단) + PDF 이미지(아래) 배치
+// 3) A4 세로 PDF로 내보내기
+function buildPdfBlobWithDocStamp(fileId, stampApprovals, fileName, root) {
+  var token = ScriptApp.getOAuthToken();
+  var tempSsId = null;
+  try {
+    // ── 1. PDF 페이지 이미지(썸네일) 가져오기 ──
+    var pdfPageBlob = null;
+    // Sheets insertImage 제한: 2MB / 100만 픽셀 → A4 비율 최대 ~800px
+    var thumbSizes = ['w800', 'w700', 'w600'];
+    for (var ti = 0; ti < thumbSizes.length && !pdfPageBlob; ti++) {
+      try {
+        var tr = UrlFetchApp.fetch(
+          'https://drive.google.com/thumbnail?id=' + fileId + '&sz=' + thumbSizes[ti],
+          { headers: { 'Authorization': 'Bearer ' + token }, muteHttpExceptions: true }
+        );
+        if (tr.getResponseCode() === 200 && tr.getBlob().getBytes().length > 500) {
+          pdfPageBlob = tr.getBlob();
+        }
+      } catch(e) {}
+    }
+    // thumbnailLink fallback
+    if (!pdfPageBlob) {
+      try {
+        var mr = UrlFetchApp.fetch(
+          'https://www.googleapis.com/drive/v3/files/' + fileId + '?fields=thumbnailLink',
+          { headers: { 'Authorization': 'Bearer ' + token }, muteHttpExceptions: true }
+        );
+        var thumbLink = JSON.parse(mr.getContentText()).thumbnailLink;
+        if (thumbLink) {
+          var hiRes = thumbLink.replace(/=s\d+/, '=s800');
+          var tr2 = UrlFetchApp.fetch(hiRes, { muteHttpExceptions: true });
+          if (tr2.getResponseCode() === 200) pdfPageBlob = tr2.getBlob();
+        }
+      } catch(e) {}
+    }
+    if (!pdfPageBlob) throw new Error('PDF 썸네일을 가져올 수 없습니다.');
+
+    // ── 2. 빈 Google Sheets 생성 ──
+    var ss = SpreadsheetApp.create('_qa_tmp_pdf_' + Utilities.getUuid().substring(0, 6));
+    tempSsId = ss.getId();
+    var sheet = ss.getSheets()[0];
+
+    var stepCount = stampApprovals.length;
+    var stampColW = 87;  // 결재 열 너비(px)
+    var stampTotalW = stampColW * stepCount;
+
+    // ── 3. 열/행 구성: A4 인쇄 영역 맞춤 + 결재란 여백 ──
+    // 1 Sheet px ≈ 0.75pt
+    // 결재란 여백: 위 2cm(≈76px), 오른쪽 1.5cm(≈57px)
+    var topMarginPx = 38;   // 1cm (PDF 원본 상단 여백과 합쳐 실질 2cm)
+    var rightMarginPx = 57; // 1.5cm
+
+    var totalWidth = 775;
+    var mainColW = totalWidth - stampTotalW - rightMarginPx;
+    if (mainColW < 300) mainColW = 300;
+
+    // 열: [메인콘텐츠] [결재열1] [결재열2] ... [오른쪽여백열]
+    sheet.setColumnWidth(1, mainColW);
+    for (var i = 0; i < stepCount; i++) {
+      sheet.setColumnWidth(2 + i, stampColW);
+    }
+    var rightMarginCol = 2 + stepCount;
+    // 여백열 확보
+    while (sheet.getMaxColumns() < rightMarginCol) {
+      sheet.insertColumnAfter(sheet.getMaxColumns());
+    }
+    sheet.setColumnWidth(rightMarginCol, rightMarginPx);
+
+    // 행: [위여백] [결재란 5행] [PDF이미지]
+    // 엑셀 결재란과 동일한 크기
+    sheet.setRowHeight(1, topMarginPx); // 위 여백 2cm
+    sheet.setRowHeight(2, 22);   // 단계명
+    sheet.setRowHeight(3, 31);   // 서명 상단
+    sheet.setRowHeight(4, 31);   // 서명 하단
+    sheet.setRowHeight(5, 31);   // 이름/직책
+    sheet.setRowHeight(6, 17);   // 날짜
+
+    // ── 4. 결재란 (행 2~6, 열 2~) ──
+    for (var i = 0; i < stepCount; i++) {
+      var col = 2 + i;
+      var a = stampApprovals[i];
+
+      // 행2: 단계명
+      sheet.getRange(2, col).setValue(a.step_name || '결재')
+        .setFontSize(8).setFontWeight('bold')
+        .setHorizontalAlignment('center').setVerticalAlignment('middle')
+        .setBackground('#e0f2f2');
+
+      // 행3-4: 서명 (병합)
+      sheet.getRange(3, col, 2, 1).merge()
+        .setHorizontalAlignment('center').setVerticalAlignment('middle')
+        .setBackground('#ffffff');
+
+      if (a.status === 'approved') {
+        var sigOk = false;
+        if (a.signature_file_id) {
+          try {
+            var sf = DriveApp.getFileById(a.signature_file_id);
+            sheet.insertImage(sf.getBlob().setContentType(sf.getMimeType() || 'image/png'), col, 3)
+              .setWidth(66).setHeight(50);
+            sigOk = true;
+          } catch(e) { Logger.log('PDF 서명 삽입 실패: ' + e.message); }
+        }
+        if (!sigOk) {
+          sheet.getRange(3, col).setValue(a.approver_name || '')
+            .setFontSize(9).setFontWeight('bold');
+        }
+      }
+
+      // 행5: 이름+직책
+      var nameStr = [a.approver_name, a.approver_position].filter(Boolean).join(' ');
+      sheet.getRange(5, col).setValue(nameStr)
+        .setFontSize(7).setHorizontalAlignment('center').setVerticalAlignment('middle')
+        .setWrap(false);
+
+      // 행6: 날짜
+      var dateStr = (a.signed_at || a.approved_at) ? formatShortDate(a.signed_at || a.approved_at) : '';
+      sheet.getRange(6, col).setValue(dateStr)
+        .setFontSize(7).setFontColor('#666666')
+        .setHorizontalAlignment('center').setVerticalAlignment('middle');
+    }
+
+    // 결재란 테두리 (행2~6, 열2~)
+    sheet.getRange(2, 2, 5, stepCount)
+      .setBorder(true, true, true, true, true, true, '#006666', SpreadsheetApp.BorderStyle.SOLID);
+
+    // ── 5. PDF 이미지 삽입 (행7 앵커, 원본 크기 유지) ──
+    var stampH = topMarginPx + 22 + 31 + 31 + 31 + 17; // =170px (여백38+결재란132)
+    var imgW = totalWidth;
+    var fullPageH = Math.round(totalWidth * 1.414); // A4 전체 높이 (≈1096px)
+    var visibleH = fullPageH - stampH; // 1페이지 내 보이는 영역 (≈916px)
+
+    // 이미지는 원본 A4 크기 그대로 (축소 없음)
+    // 행7 높이 = 보이는 영역만 → scale=4에서 정확히 1페이지
+    // 이미지 하단은 행7 경계에서 자동 클립됨
+    sheet.setRowHeight(7, visibleH);
+
+    // 행8 이후 모두 삭제
+    if (sheet.getMaxRows() > 7) {
+      try { sheet.deleteRows(8, sheet.getMaxRows() - 7); } catch(e) {}
+    }
+
+    // 열 트리밍 (오른쪽 여백열까지 유지)
+    var endCol = rightMarginCol;
+    if (sheet.getMaxColumns() > endCol) {
+      try { sheet.deleteColumns(endCol + 1, sheet.getMaxColumns() - endCol); } catch(e) {}
+    }
+
+    // 이미지: 원본 크기로 삽입 (결재란 바로 아래, 행7)
+    var img = sheet.insertImage(pdfPageBlob, 1, 7);
+    img.setWidth(imgW);
+    img.setHeight(fullPageH);
+
+    try { sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearNote(); } catch(e) {}
+    SpreadsheetApp.flush();
+    Utilities.sleep(1500);
+
+    // ── 6. A4 세로 PDF 내보내기 (최소 여백, 1페이지 맞춤) ──
+    var sheetId = sheet.getSheetId();
+    var url = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export?' +
+      'format=pdf&size=A4&portrait=true&scale=4' +
+      '&sheetnames=false&gridlines=false&printtitle=false&pagenumbers=false&notes=false' +
+      '&top_margin=0.1&bottom_margin=0.1&left_margin=0.1&right_margin=0.1' +
+      '&gid=' + sheetId;
+
+    var pdfResp = UrlFetchApp.fetch(url, {
+      headers: { 'Authorization': 'Bearer ' + token },
+      muteHttpExceptions: true
+    });
+    if (pdfResp.getResponseCode() !== 200) {
+      throw new Error('PDF export 실패: ' + pdfResp.getResponseCode());
+    }
+
+    // 하단 클립 비율 계산
+    var clipPct = Math.round(stampH / fullPageH * 100);
+
+    return {
+      blob: pdfResp.getBlob().setName(fileName),
+      clip_percent: clipPct
+    };
+
+  } finally {
+    if (tempSsId) { try { DriveApp.getFileById(tempSsId).setTrashed(true); } catch(e) {} }
+  }
+}
+
+
 function formatShortDate(s) {
   if (!s) return '';
   try {
     const d = new Date(s);
     if (isNaN(d)) return '';
-    return (d.getMonth()+1) + '/' + d.getDate();
+    return d.getFullYear() + '.' + (d.getMonth()+1) + '.' + d.getDate();
   } catch(e) { return ''; }
 }
 
@@ -1248,28 +1488,34 @@ function generatePdfWithStamp(data) {
   const stampApprovals = hasAuthorStep ? approvals : [creatorInfo].concat(approvals);
 
   if (origMime === 'application/pdf') {
-    // PDF 원본은 스탬프 삽입 불가 → 원본 그대로 반환
-    const bytes = originalFile.getBlob().getBytes();
-    return { success: true, pdf_base64: Utilities.base64Encode(bytes), file_name: originalFile.getName() };
+    // PDF 원본: Docs 변환 방식으로 결재란 삽입
+    const docNumber = docSh.getRange(docRowIdx, 2).getValue();
+    const docTitle = docSh.getRange(docRowIdx, 3).getValue();
+    const pdfFileName = docNumber + '_' + docTitle + '.pdf';
+    const root2 = getDriveRootFolder();
+    const pdfResult = buildPdfBlobWithDocStamp(fileId, stampApprovals, pdfFileName, root2);
+    return {
+      success: true,
+      pdf_base64: Utilities.base64Encode(pdfResult.blob.getBytes()),
+      file_name: pdfFileName,
+      clip_percent: pdfResult.clip_percent
+    };
   }
 
   // Excel → Google Sheets 변환 → 스탬프 삽입 → PDF
   const root = getDriveRootFolder();
   let tempFileId = null;
   try {
-    const resource = {
-      title: 'temp_dl_' + data.doc_id,
-      mimeType: 'application/vnd.google-apps.spreadsheet',
-      parents: [{ id: root.getId() }]
-    };
-    const insertedFile = Drive.Files.copy(resource, fileId, { convert: true });
-    tempFileId = insertedFile.id;
+    // multipart upload로 Excel → Sheets 변환 (Advanced Drive Service 불필요)
+    tempFileId = convertFileToSheets(fileId, 'temp_dl_' + data.doc_id, root.getId());
+    Utilities.sleep(2000); // 변환 완료 대기
 
     const ss = SpreadsheetApp.openById(tempFileId);
     const sheet = ss.getSheets()[0];
     let printRange = null;
     if (stampApprovals.length > 0) printRange = embedApprovalStamp(sheet, stampApprovals);
     SpreadsheetApp.flush();
+    Utilities.sleep(1500); // 이미지 삽입 완료 대기
 
     const docNumber = docSh.getRange(docRowIdx, 2).getValue();
     const docTitle = docSh.getRange(docRowIdx, 3).getValue();
@@ -1356,6 +1602,30 @@ function markNotificationRead(data) {
   } else {
     const rowIdx = findRowIndex(sh, 0, data.id);
     if (rowIdx > 0) sh.getRange(rowIdx, 6).setValue('Y');
+  }
+  SpreadsheetApp.flush();
+  return { success: true };
+}
+
+function deleteNotification(data) {
+  const user = getSessionUser(data);
+  const sh = getSheet('알림');
+  if (data.id === 'all') {
+    // 내 알림 전체 삭제 (아래→위로 삭제해야 행번호 안 밀림)
+    const allData = sh.getDataRange().getValues();
+    for (var i = allData.length - 1; i >= 1; i--) {
+      if (String(allData[i][2]) === String(user.id)) {
+        sh.deleteRow(i + 1);
+      }
+    }
+  } else {
+    const rowIdx = findRowIndex(sh, 0, data.id);
+    if (rowIdx > 0) {
+      // 본인 알림인지 확인
+      if (String(sh.getRange(rowIdx, 3).getValue()) === String(user.id)) {
+        sh.deleteRow(rowIdx);
+      }
+    }
   }
   SpreadsheetApp.flush();
   return { success: true };
@@ -1556,6 +1826,22 @@ function getLoginHistory(data) {
     name: String(r.name), login_at: String(r.login_at), ip: String(r.ip || '')
   })).sort((a, b) => new Date(b.login_at) - new Date(a.login_at));
   return { success: true, history: history.slice(0, 200) };
+}
+
+function deleteLoginHistory(data) {
+  const user = getSessionUser(data);
+  if (user.role !== 'admin') return { success: false, error: '관리자만 삭제할 수 있습니다.' };
+  const sh = getSheet('로그인이력');
+  if (data.id === 'all') {
+    // 헤더 행만 남기고 전체 삭제
+    const lastRow = sh.getLastRow();
+    if (lastRow > 1) sh.deleteRows(2, lastRow - 1);
+  } else {
+    const rowIdx = findRowIndex(sh, 0, data.id);
+    if (rowIdx > 0) sh.deleteRow(rowIdx);
+  }
+  SpreadsheetApp.flush();
+  return { success: true };
 }
 
 // ========== BOM 제품 데이터 ==========
