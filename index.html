@@ -255,7 +255,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
         <li class="nav-item"><a class="nav-link" href="#" data-page="search"><i class="bi bi-search"></i>문서 검색</a></li>
         <hr class="border-secondary mx-3 my-2">
         <li class="nav-item" id="navAdmin" style="display:none"><a class="nav-link" href="#" data-page="admin-users"><i class="bi bi-people"></i>사용자 관리</a></li>
-        <li class="nav-item" id="navTemplates"><a class="nav-link" href="#" data-page="admin-templates"><i class="bi bi-file-earmark-ruled"></i>템플릿 관리</a></li>
+        <!-- 템플릿 관리 메뉴 제거됨 -->
         <li class="nav-item" id="navSettings" style="display:none"><a class="nav-link" href="#" data-page="admin-settings"><i class="bi bi-gear"></i>설정</a></li>
       </ul>
     </div>
@@ -396,17 +396,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
             </div>
             <input type="hidden" id="newDocSavePath">
 
-            <!-- 템플릿에서 불러오기 -->
-            <div class="mb-3 p-3 rounded" style="background:#f0f8f8;border:1px solid #cce4e4">
-              <label class="form-label fw-semibold mb-2"><i class="bi bi-file-earmark-ruled me-1"></i>템플릿에서 불러오기 (선택)</label>
-              <div class="d-flex gap-2 align-items-center">
-                <select class="form-select form-select-sm" id="templateSelectForNewDoc" style="max-width:320px">
-                  <option value="">-- 직접 파일 업로드 --</option>
-                </select>
-                <button class="btn btn-sm btn-outline-primary" onclick="loadTemplateAsDocFile()"><i class="bi bi-download me-1"></i>불러오기</button>
-              </div>
-              <small class="text-muted mt-1 d-block">템플릿을 선택하면 파일이 자동으로 로드됩니다. 내용은 구글 드라이브에서 열어 수정하세요.</small>
-            </div>
+            <!-- 템플릿 불러오기 제거됨 -->
 
             <div class="mb-4">
               <label class="form-label fw-semibold">문서 파일 (Excel 또는 PDF) <span class="text-danger">*</span></label>
@@ -685,6 +675,23 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
           </div>
         </div>
 
+        <!-- 결재란 표시 항목 설정 -->
+        <div class="card mb-4">
+          <div class="card-header"><i class="bi bi-layout-text-sidebar me-2"></i>결재란 표시 항목 설정</div>
+          <div class="card-body">
+            <p class="text-muted mb-3" style="font-size:12px">웹 화면 및 PDF 출력 결재란에 표시할 항목을 선택합니다.</p>
+            <div class="row g-2">
+              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="stampShowStepName" checked disabled><label class="form-check-label" for="stampShowStepName">단계명 <small class="text-muted">(필수)</small></label></div></div>
+              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="stampShowSignature" checked disabled><label class="form-check-label" for="stampShowSignature">서명 <small class="text-muted">(필수)</small></label></div></div>
+              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="stampShowDept" checked><label class="form-check-label" for="stampShowDept">부서</label></div></div>
+              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="stampShowName" checked><label class="form-check-label" for="stampShowName">이름</label></div></div>
+              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="stampShowPosition" checked><label class="form-check-label" for="stampShowPosition">직책</label></div></div>
+              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="stampShowDate" checked><label class="form-check-label" for="stampShowDate">결재일</label></div></div>
+            </div>
+            <button class="btn btn-primary btn-sm mt-3" onclick="saveStampDisplaySettings()"><i class="bi bi-check me-1"></i>표시 항목 저장</button>
+          </div>
+        </div>
+
         <!-- 기본 결재선 설정 -->
         <div class="card mb-4">
           <div class="card-header"><i class="bi bi-diagram-3 me-2"></i>기본 결재선 설정</div>
@@ -829,6 +836,7 @@ let DOC_CATEGORIES = [
 let BOM_DATA = [];
 let AUTHOR_SIGN_FIRST = false;
 let DOC_TYPE_PATHS = {};
+let STAMP_DISPLAY = { dept: true, name: true, position: true, date: true };
 let bomSearchTimer = null;
 
 // ============================================================
@@ -1558,6 +1566,7 @@ function renderApprovalStampTable(approvals, doc) {
   }
 
   if (!steps.length) { c.innerHTML = ''; return; }
+  const sd = STAMP_DISPLAY;
   let html = '<table class="approval-stamp-table"><tr>';
   steps.forEach(a => { html += `<th>${esc(a.step_name)}</th>`; });
   html += '</tr><tr>';
@@ -1572,10 +1581,23 @@ function renderApprovalStampTable(approvals, doc) {
     }
     html += '</td>';
   });
-  html += '</tr><tr>';
-  steps.forEach(a => { const namePos = [a.approver_name, a.approver_position].filter(Boolean).join(' '); html += `<td style="font-size:10px">${esc(a.approver_dept || '')}<br><strong>${esc(namePos)}</strong></td>`; });
-  html += '</tr><tr>';
-  steps.forEach(a => { html += `<td style="font-size:9px">${a.signed_at ? formatDate(a.signed_at) : ''}</td>`; });
+  if (sd.dept !== false || sd.name !== false || sd.position !== false) {
+    html += '</tr><tr>';
+    steps.forEach(a => {
+      let parts = [];
+      if (sd.dept !== false && a.approver_dept) parts.push(esc(a.approver_dept));
+      let nameParts = [];
+      if (sd.name !== false) nameParts.push(a.approver_name || '');
+      if (sd.position !== false) nameParts.push(a.approver_position || '');
+      const namePos = nameParts.filter(Boolean).join(' ');
+      const line1 = parts.length ? parts.join(' ') + '<br>' : '';
+      html += `<td style="font-size:10px">${line1}<strong>${esc(namePos)}</strong></td>`;
+    });
+  }
+  if (sd.date !== false) {
+    html += '</tr><tr>';
+    steps.forEach(a => { html += `<td style="font-size:9px">${a.signed_at ? formatDate(a.signed_at) : ''}</td>`; });
+  }
   html += '</tr></table>';
   c.innerHTML = html;
 }
@@ -1946,6 +1968,14 @@ async function loadSettings() {
     AUTHOR_SIGN_FIRST = s.author_sign_first === 'true';
     const asf = document.getElementById('authorSignFirst');
     if (asf) asf.checked = AUTHOR_SIGN_FIRST;
+    // 결재란 표시 항목 로드
+    if (s.stamp_display) {
+      try { STAMP_DISPLAY = JSON.parse(s.stamp_display); } catch(e) {}
+    }
+    var sdDept = document.getElementById('stampShowDept'); if (sdDept) sdDept.checked = STAMP_DISPLAY.dept !== false;
+    var sdName = document.getElementById('stampShowName'); if (sdName) sdName.checked = STAMP_DISPLAY.name !== false;
+    var sdPos = document.getElementById('stampShowPosition'); if (sdPos) sdPos.checked = STAMP_DISPLAY.position !== false;
+    var sdDate = document.getElementById('stampShowDate'); if (sdDate) sdDate.checked = STAMP_DISPLAY.date !== false;
     // 기본 결재선 로드
     loadDefaultApprovalStepsUI(s.default_approval_chain);
     // BOM 제품 수 표시
@@ -2009,6 +2039,21 @@ async function saveSettings() {
     }});
     hideLoading();
     if (result.success) showToast('설정 저장됨'); else showToast(result.error, 'danger');
+  } catch(ex) { hideLoading(); }
+}
+
+async function saveStampDisplaySettings() {
+  STAMP_DISPLAY = {
+    dept: document.getElementById('stampShowDept').checked,
+    name: document.getElementById('stampShowName').checked,
+    position: document.getElementById('stampShowPosition').checked,
+    date: document.getElementById('stampShowDate').checked
+  };
+  showLoading('저장 중...');
+  try {
+    const result = await api('settings_update', { settings: { stamp_display: JSON.stringify(STAMP_DISPLAY) } });
+    hideLoading();
+    if (result.success) showToast('결재란 표시 항목 저장됨'); else showToast(result.error, 'danger');
   } catch(ex) { hideLoading(); }
 }
 
@@ -2104,6 +2149,7 @@ async function loadCategoriesFromServer() {
       if (s.doc_categories) { try { DOC_CATEGORIES = JSON.parse(s.doc_categories); } catch(e) {} }
       AUTHOR_SIGN_FIRST = s.author_sign_first === 'true';
       try { DOC_TYPE_PATHS = JSON.parse(s.doc_type_paths || '{}'); } catch(e) {}
+      if (s.stamp_display) { try { STAMP_DISPLAY = JSON.parse(s.stamp_display); } catch(e) {} }
     }
   } catch(ex) {}
 }

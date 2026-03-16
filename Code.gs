@@ -1047,6 +1047,15 @@ function getCreatorInfo(creatorId, creatorName) {
   };
 }
 
+// ========== 결재란 표시 항목 설정 가져오기 ==========
+function getStampDisplay() {
+  try {
+    var s = getSettings().settings;
+    if (s.stamp_display) return JSON.parse(s.stamp_display);
+  } catch(e) {}
+  return { dept: true, name: true, position: true, date: true };
+}
+
 // ========== 결재란 삽입 (상단 5행 삽입 → 결재란 우측 상단 배치) ==========
 // 반환값: { r1, c1, r2, c2 } (0-indexed PDF 인쇄 범위)
 function embedApprovalStamp(sheet, approvals) {
@@ -1054,6 +1063,7 @@ function embedApprovalStamp(sheet, approvals) {
 
   const stepCount = approvals.length;
   const STAMP_ROWS = 5;
+  const sd = getStampDisplay();
 
   // ── 삽입 전 원본 컨텐츠 범위 파악 ──
   const contentLastCol = Math.max(sheet.getLastColumn(), 1);
@@ -1126,24 +1136,28 @@ function embedApprovalStamp(sheet, approvals) {
     }
   }
 
-  // ── Row 4: 부서 + 이름 직책 (2줄) ──
+  // ── Row 4: 부서 + 이름 직책 (설정에 따라) ──
   for (let i = 0; i < stepCount; i++) {
     const col = startCol + i;
     const a = approvals[i];
-    const deptStr = a.approver_dept || '';
-    const nameStr = [a.approver_name, a.approver_position].filter(Boolean).join(' ');
-    const cellText = deptStr ? deptStr + '\n' + nameStr : nameStr;
+    const parts = [];
+    if (sd.dept !== false && a.approver_dept) parts.push(a.approver_dept);
+    const nameParts = [];
+    if (sd.name !== false && a.approver_name) nameParts.push(a.approver_name);
+    if (sd.position !== false && a.approver_position) nameParts.push(a.approver_position);
+    if (nameParts.length) parts.push(nameParts.join(' '));
     sheet.getRange(4, col)
-      .setValue(cellText)
+      .setValue(parts.join('\n'))
       .setFontFamily(stampFont).setFontSize(8)
       .setHorizontalAlignment('center').setVerticalAlignment('middle')
       .setWrap(true);
   }
 
-  // ── Row 5: 결재일 ──
+  // ── Row 5: 결재일 (설정에 따라) ──
   for (let i = 0; i < stepCount; i++) {
     const col = startCol + i;
     const a = approvals[i];
+    if (sd.date === false) { sheet.getRange(5, col).setValue(''); continue; }
     const dateStr = (a.signed_at || a.approved_at) ? formatShortDate(a.signed_at || a.approved_at) : '';
     sheet.getRange(5, col).setValue(dateStr)
       .setFontFamily(stampFont).setFontSize(8).setFontColor('#666666')
@@ -1374,20 +1388,28 @@ function buildPdfBlobWithDocStamp(fileId, stampApprovals, fileName, root) {
         }
       }
 
-      // 행5: 부서 + 이름 직책 (2줄, 웹 화면과 동일)
-      var deptStr = a.approver_dept || '';
-      var nameStr = [a.approver_name, a.approver_position].filter(Boolean).join(' ');
-      var cellText = deptStr ? deptStr + '\n' + nameStr : nameStr;
-      sheet.getRange(5, col).setValue(cellText)
+      // 행5: 부서 + 이름 직책 (설정에 따라)
+      var sd = getStampDisplay();
+      var infoParts = [];
+      if (sd.dept !== false && a.approver_dept) infoParts.push(a.approver_dept);
+      var nameParts2 = [];
+      if (sd.name !== false && a.approver_name) nameParts2.push(a.approver_name);
+      if (sd.position !== false && a.approver_position) nameParts2.push(a.approver_position);
+      if (nameParts2.length) infoParts.push(nameParts2.join(' '));
+      sheet.getRange(5, col).setValue(infoParts.join('\n'))
         .setFontFamily(stampFont).setFontSize(8)
         .setHorizontalAlignment('center').setVerticalAlignment('middle')
         .setWrap(true);
 
-      // 행6: 날짜
-      var dateStr = (a.signed_at || a.approved_at) ? formatShortDate(a.signed_at || a.approved_at) : '';
-      sheet.getRange(6, col).setValue(dateStr)
-        .setFontFamily(stampFont).setFontSize(8).setFontColor('#666666')
-        .setHorizontalAlignment('center').setVerticalAlignment('middle');
+      // 행6: 날짜 (설정에 따라)
+      if (sd.date === false) {
+        sheet.getRange(6, col).setValue('');
+      } else {
+        var dateStr = (a.signed_at || a.approved_at) ? formatShortDate(a.signed_at || a.approved_at) : '';
+        sheet.getRange(6, col).setValue(dateStr)
+          .setFontFamily(stampFont).setFontSize(8).setFontColor('#666666')
+          .setHorizontalAlignment('center').setVerticalAlignment('middle');
+      }
     }
 
     // 결재란 테두리 (웹과 동일한 teal 색상)
