@@ -2307,7 +2307,7 @@ async function bulkApprove() {
   } catch(e) {
     console.error('일괄 승인 전체 오류:', e);
   } finally {
-    stopSync();
+    endSync();
   }
   let msg = success + '건 승인 완료';
   if (skip) msg += ', ' + skip + '건 건너뜀(이미 처리됨)';
