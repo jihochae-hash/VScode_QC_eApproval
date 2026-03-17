@@ -2094,8 +2094,9 @@ function showApp() {
   document.getElementById('sidebarUserName').textContent = CURRENT_USER.name;
   document.getElementById('sidebarUserDept').textContent = CURRENT_USER.department;
   document.getElementById('sidebarUserPos').textContent = CURRENT_USER.position;
-  // Google Drive API 초기화 (백그라운드)
+  // Google Drive 자동 연결 (로그인 직후)
   initGoogleDrive();
+  setTimeout(() => { autoConnectGoogleDrive(); }, 1500);
   document.getElementById('topBarUser').textContent = CURRENT_USER.name;
   if (CURRENT_USER.role === 'admin') {
     document.getElementById('navAdmin').style.display = 'block';
@@ -3417,6 +3418,26 @@ async function saveDefaultApprovalChain() {
     else showToast(result.error, 'danger');
   } catch(ex) { hideLoading(); }
 }
+
+// 로그인 직후 자동 Google Drive 연결
+function autoConnectGoogleDrive() {
+  if (gdriveAccessToken && Date.now() < gdriveTokenExpiry) return; // 이미 연결됨
+  if (typeof google === 'undefined' || !google.accounts) {
+    setTimeout(autoConnectGoogleDrive, 2000);
+    return;
+  }
+  connectGoogleDrive();
+}
+
+// 토큰 만료 감시 (50분마다 체크, 만료되면 자동 재연결)
+setInterval(() => {
+  if (!gdriveAccessToken) return;
+  if (Date.now() >= gdriveTokenExpiry) {
+    console.log('Google Drive 토큰 만료 → 자동 재연결');
+    gdriveAccessToken = null;
+    autoConnectGoogleDrive();
+  }
+}, 60000 * 5); // 5분마다 체크
 
 function connectGoogleDrive() {
   try {
