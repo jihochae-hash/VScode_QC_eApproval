@@ -86,6 +86,12 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
 .table-wrap { background:#fff; border-radius:14px; border:1px solid #cce4e4; overflow:hidden; box-shadow:0 2px 6px rgba(0,102,102,.05); }
 .table-wrap .table { margin:0; }
 .table-wrap .table th { background:#eef8f8; font-weight:600; font-size:12px; color:var(--primary-dark); padding:10px 14px; border-bottom:2px solid #c0e0e0; white-space:nowrap; }
+.paging-wrap { display:flex; justify-content:center; align-items:center; gap:4px; padding:12px 0; flex-wrap:wrap; }
+.paging-wrap .page-info { font-size:12px; color:#666; margin-right:8px; }
+.paging-wrap button { min-width:32px; height:32px; border:1px solid #cce4e4; background:#fff; border-radius:6px; font-size:12px; cursor:pointer; color:#333; }
+.paging-wrap button:hover { background:#eef8f8; }
+.paging-wrap button.active { background:var(--primary); color:#fff; border-color:var(--primary); }
+.paging-wrap button:disabled { opacity:0.4; cursor:default; }
 .sortable-th { cursor:pointer; user-select:none; }
 .sortable-th:hover { background:#ddf0f0 !important; }
 .sortable-th .sort-icon { font-size:10px; opacity:0.4; }
@@ -284,10 +290,9 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
       </div>
       <div class="d-flex align-items-center gap-2">
         <span id="syncStatusBar"><span class="sync-bar-bg" id="syncBarBg"></span><span class="sync-content"><i class="bi bi-arrow-repeat" style="animation:syncSpin 1.5s linear infinite"></i><span>동기화 중... <small style="font-weight:400;opacity:.8">다른 페이지로 이동 가능</small></span></span></span>
-        <span id="gdriveTopStatus" style="font-size:12px;display:none" class="d-flex align-items-center gap-1">
-          <i class="bi bi-cloud-check-fill text-success" id="gdriveTopIcon"></i>
-          <span id="gdriveTopText" class="text-success">Drive 연결됨</span>
-          <button class="btn btn-outline-warning btn-sm" id="gdriveTopBtn" onclick="connectGoogleDrive()" style="font-size:11px;padding:1px 8px;display:none">연결</button>
+        <span style="font-size:12px" class="d-flex align-items-center gap-1">
+          <i class="bi bi-cloud-check-fill text-success"></i>
+          <span class="text-success">Drive 연결됨</span>
         </span>
         <button class="btn btn-success" onclick="refreshCurrentPage()" title="새로고침" style="font-size:13px;padding:5px 14px;line-height:1"><i class="bi bi-arrow-clockwise me-1"></i>새로고침</button>
         <div class="dropdown">
@@ -478,6 +483,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
             <th></th></tr></thead>
           <tbody id="pendingApprovalTbody"><tr><td colspan="8" class="text-center text-muted py-4">결재 대기 문서가 없습니다.</td></tr></tbody></table>
         </div>
+        <div id="paging-pending" class="paging-wrap"></div>
       </div>
 
       <!-- 내 문서함 -->
@@ -504,6 +510,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
             <th></th></tr></thead>
           <tbody id="myDocsTbody"><tr><td colspan="8" class="text-center text-muted py-4">문서가 없습니다.</td></tr></tbody></table>
         </div>
+        <div id="paging-mydocs" class="paging-wrap"></div>
       </div>
 
       <!-- 문서 검색 (전체 문서 + 검색 통합) -->
@@ -533,6 +540,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
             <th></th></tr></thead>
           <tbody id="searchResultTbody"><tr><td colspan="8" class="text-center text-muted py-4">로딩 중...</td></tr></tbody></table>
         </div>
+        <div id="paging-search" class="paging-wrap"></div>
       </div>
 
       <!-- 문서 상세 -->
@@ -615,7 +623,15 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
           <button class="btn btn-primary btn-sm" onclick="showAddUserModal()"><i class="bi bi-person-plus me-1"></i>사용자 추가</button>
         </div>
         <div class="table-wrap">
-          <table class="table"><thead><tr><th>아이디</th><th>이름</th><th>부서</th><th>직책</th><th>권한</th><th>서명</th><th>등록일</th><th></th></tr></thead>
+          <table class="table"><thead><tr>
+            <th class="sortable-th" onclick="sortTable('users','username')">아이디 <i class="bi bi-chevron-expand sort-icon"></i></th>
+            <th class="sortable-th" onclick="sortTable('users','name')">이름 <i class="bi bi-chevron-expand sort-icon"></i></th>
+            <th class="sortable-th" onclick="sortTable('users','department')">부서 <i class="bi bi-chevron-expand sort-icon"></i></th>
+            <th class="sortable-th" onclick="sortTable('users','position')">직책 <i class="bi bi-chevron-expand sort-icon"></i></th>
+            <th class="sortable-th" onclick="sortTable('users','role')">권한 <i class="bi bi-chevron-expand sort-icon"></i></th>
+            <th>서명</th>
+            <th class="sortable-th" onclick="sortTable('users','created_at')">등록일 <i class="bi bi-chevron-expand sort-icon"></i></th>
+            <th></th></tr></thead>
           <tbody id="userListTbody"><tr><td colspan="8" class="text-center text-muted py-4">사용자가 없습니다.</td></tr></tbody></table>
         </div>
 
@@ -678,10 +694,43 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
         <div class="card mb-4">
           <div class="card-header"><i class="bi bi-google me-2"></i>Google Drive 연동</div>
           <div class="card-body">
-            <p class="text-muted mb-3" style="font-size:12px">결재 승인 시 PDF를 Google Drive에도 자동 저장합니다. 아래 버튼으로 먼저 연결해주세요.</p>
+            <p class="text-muted mb-3" style="font-size:12px">결재 승인 시 PDF를 Google Drive에 자동 저장합니다. (GAS 중계 방식 — 별도 연결 불필요)</p>
             <div class="d-flex align-items-center gap-3">
-              <button class="btn btn-outline-primary" onclick="connectGoogleDrive()"><i class="bi bi-link-45deg me-1"></i>Google Drive 연결</button>
-              <span id="gdriveStatus" class="text-muted small">연결 안 됨</span>
+              <span class="text-success"><i class="bi bi-check-circle-fill me-1"></i>영구 연결됨 (관리자 Drive에 자동 저장)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 문서 일괄 삭제 (데이터 관리) -->
+        <div class="card mb-4">
+          <div class="card-header"><i class="bi bi-trash me-2"></i>문서 일괄 삭제 (데이터 정리)</div>
+          <div class="card-body">
+            <p class="text-muted mb-3" style="font-size:12px">
+              지정 기간 이전의 문서를 일괄 삭제합니다. Firestore + Firebase Storage 삭제, Google Drive는 유지됩니다.
+            </p>
+            <div class="row g-2 align-items-end">
+              <div class="col-md-3">
+                <label class="form-label small">기준일 이전 문서 삭제</label>
+                <input type="date" class="form-control" id="bulkDeleteBefore">
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small">상태 필터</label>
+                <select class="form-select" id="bulkDeleteStatus">
+                  <option value="all">전체 상태</option>
+                  <option value="approved">승인 완료만</option>
+                  <option value="rejected">반려만</option>
+                </select>
+              </div>
+              <div class="col-md-2">
+                <button class="btn btn-outline-info w-100" onclick="previewBulkDelete()"><i class="bi bi-search me-1"></i>조회</button>
+              </div>
+            </div>
+            <div id="bulkDeletePreview" class="mt-3" style="display:none">
+              <div class="alert alert-warning py-2" style="font-size:13px">
+                <strong id="bulkDeleteCount">0</strong>건의 문서가 삭제 대상입니다.
+                <br><small>Firestore + Storage 삭제 / Google Drive 유지</small>
+              </div>
+              <button class="btn btn-danger" onclick="executeBulkDelete()"><i class="bi bi-trash me-1"></i>일괄 삭제 실행</button>
             </div>
           </div>
         </div>
@@ -872,9 +921,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
-<!-- Google Identity Services + GAPI (Drive API) -->
-<script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="https://apis.google.com/js/api.js"></script>
+<!-- Google Drive는 GAS 중계 방식 사용 (OAuth 불필요) -->
 <!-- pdf-lib (브라우저 PDF 편집) + html2canvas (결재란 이미지 렌더링) -->
 <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
@@ -896,110 +943,31 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // ============================================================
-// Google Drive API 연동 (백그라운드 PDF 저장)
+// Google Drive 연동 (GAS 중계 방식 — 토큰 만료 없음, 영구 연결)
 // ============================================================
-const GDRIVE_CLIENT_ID = '29765960226-kh0nl8pd1vuhbb75ndudqrk4qv5kssoj.apps.googleusercontent.com';
-const GDRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.file';
-let gdriveAccessToken = null;
-let gdriveTokenExpiry = 0;
-let gdriveInitialized = false;
+const GAS_DRIVE_URL = 'https://script.google.com/macros/s/AKfycbzB9SY_mK_jY2pLkmwmO3g-5DpCgtAE43lK7Q3Y0oA4Ku9LgK_ov4bvf6MbHom2mrhb/exec';
 
-// Google Identity Services 초기화
-function initGoogleDrive() {
-  if (gdriveInitialized) return;
-  try {
-    if (typeof google === 'undefined' || !google.accounts) {
-      setTimeout(initGoogleDrive, 1000);
-      return;
-    }
-    gdriveInitialized = true;
-    console.log('Google Drive API 준비 완료');
-  } catch(e) { console.log('GDrive init skip:', e.message); }
-}
-
-// Drive 토큰 획득 (팝업 — 최초 1회만, 이후 자동 갱신)
-function getGDriveToken() {
-  return new Promise((resolve, reject) => {
-    if (gdriveAccessToken && Date.now() < gdriveTokenExpiry) {
-      resolve(gdriveAccessToken);
-      return;
-    }
-    try {
-      const client = google.accounts.oauth2.initTokenClient({
-        client_id: GDRIVE_CLIENT_ID,
-        scope: GDRIVE_SCOPES,
-        callback: (resp) => {
-          if (resp.error) { reject(new Error(resp.error)); return; }
-          gdriveAccessToken = resp.access_token;
-          gdriveTokenExpiry = Date.now() + (resp.expires_in - 60) * 1000;
-          resolve(gdriveAccessToken);
-        }
-      });
-      client.requestAccessToken();
-    } catch(e) { reject(e); }
-  });
-}
-
-// Google Drive에 폴더 생성 (경로별 재귀)
-async function gdriveEnsureFolder(token, pathParts, parentId) {
-  if (pathParts.length === 0) return parentId;
-  const name = pathParts[0];
-  // 기존 폴더 검색
-  const searchResp = await fetch(
-    'https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(
-      "mimeType='application/vnd.google-apps.folder' and name='" + name.replace(/'/g,"\\'") + "' and '" + parentId + "' in parents and trashed=false"
-    ) + '&fields=files(id,name)',
-    { headers: { 'Authorization': 'Bearer ' + token } }
-  );
-  const searchData = await searchResp.json();
-  let folderId;
-  if (searchData.files && searchData.files.length > 0) {
-    folderId = searchData.files[0].id;
-  } else {
-    // 폴더 생성
-    const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] })
-    });
-    const created = await createResp.json();
-    folderId = created.id;
-  }
-  return gdriveEnsureFolder(token, pathParts.slice(1), folderId);
-}
-
-// Google Drive에 PDF 업로드 (백그라운드)
+// Google Drive에 PDF 업로드 (GAS 중계, 백그라운드)
 async function uploadToGoogleDrive(pdfBytes, fileName, folderPath) {
   try {
-    const token = await getGDriveToken();
-    // 폴더 경로 생성 (root부터 시작)
-    const pathParts = folderPath.split('/').filter(Boolean);
-    const folderId = await gdriveEnsureFolder(token, pathParts, 'root');
-    // 기존 같은 이름 파일 검색 (중복 방지)
-    const existResp = await fetch(
-      'https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(
-        "name='" + fileName.replace(/'/g,"\\'") + "' and '" + folderId + "' in parents and trashed=false"
-      ) + '&fields=files(id)',
-      { headers: { 'Authorization': 'Bearer ' + token } }
-    );
-    const existData = await existResp.json();
-    // multipart upload
-    const boundary = '===boundary===';
-    const metadata = JSON.stringify({ name: fileName, parents: [folderId] });
-    const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + metadata + '\r\n--' + boundary + '\r\nContent-Type: application/pdf\r\nContent-Transfer-Encoding: base64\r\n\r\n' + arrayBufferToBase64(pdfBytes) + '\r\n--' + boundary + '--';
-    let uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
-    let method = 'POST';
-    // 기존 파일 있으면 업데이트
-    if (existData.files && existData.files.length > 0) {
-      uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files/' + existData.files[0].id + '?uploadType=multipart';
-      method = 'PATCH';
-    }
-    await fetch(uploadUrl, {
-      method: method,
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'multipart/related; boundary=' + boundary },
-      body: body
+    const b64 = arrayBufferToBase64(pdfBytes);
+    const resp = await fetch(GAS_DRIVE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({
+        action: 'save_pdf',
+        folder_path: folderPath,
+        file_name: fileName,
+        pdf_data: b64
+      })
     });
-    console.log('Google Drive 저장 완료: ' + folderPath + '/' + fileName);
+    const result = await resp.json();
+    if (result.success) {
+      console.log('Google Drive 저장 완료: ' + folderPath + '/' + fileName);
+    } else {
+      console.warn('Google Drive 저장 실패:', result.error);
+    }
+    return result;
   } catch(e) {
     console.warn('Google Drive 백그라운드 저장 실패 (Storage에는 저장됨):', e.message);
   }
@@ -1691,17 +1659,17 @@ async function fb_autoSavePdf(docId) {
   await db.collection('documents').doc(docId).update({ pdf_url:pdfUrl, updated_at:fb_now() });
   showToast('Firebase Storage 저장 완료 (' + storagePath + ')', 'success');
 
-  // Google Drive 백그라운드 업로드 (사용자 대기 없음)
+  // Google Drive 백그라운드 업로드 (GAS 중계 — 토큰 불필요, 항상 동작)
   const drivePath = storagePath.replace(/^approved_pdfs\/?/, '');
-  if (gdriveAccessToken && Date.now() < gdriveTokenExpiry) {
-    uploadToGoogleDrive(stampedBytes, fileName, drivePath).then(() => {
+  uploadToGoogleDrive(stampedBytes, fileName, drivePath).then((result) => {
+    if (result && result.success) {
       showToast('Google Drive 저장 완료 (' + drivePath + '/' + fileName + ')', 'success');
-    }).catch(e => {
-      showToast('Google Drive 저장 실패: ' + e.message, 'warning');
-    });
-  } else {
-    showToast('Google Drive 미연결 — 설정에서 연결해주세요', 'info');
-  }
+    } else {
+      showToast('Google Drive 저장 실패: ' + (result?.error || '알 수 없는 오류'), 'warning');
+    }
+  }).catch(e => {
+    showToast('Google Drive 저장 실패: ' + e.message, 'warning');
+  });
 }
 
 // ============================================================
@@ -2163,15 +2131,19 @@ function showApp() {
   document.getElementById('sidebarUserName').textContent = CURRENT_USER.name;
   document.getElementById('sidebarUserDept').textContent = CURRENT_USER.department;
   document.getElementById('sidebarUserPos').textContent = CURRENT_USER.position;
-  // Google Drive 자동 연결 (로그인 직후)
-  initGoogleDrive();
-  updateGdriveTopStatus();
-  setTimeout(() => { autoConnectGoogleDrive(); }, 1500);
+  // Google Drive는 GAS 중계 방식 — 별도 연결 불필요
   document.getElementById('topBarUser').textContent = CURRENT_USER.name;
   if (CURRENT_USER.role === 'admin') {
     document.getElementById('navAdmin').style.display = 'block';
     document.getElementById('navSettings').style.display = 'block';
   }
+  // 검색 기본 기간: 최근 3개월
+  const today = new Date();
+  const threeMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 3, today.getDate());
+  const dfFrom = document.getElementById('searchDateFrom');
+  const dfTo = document.getElementById('searchDateTo');
+  if (dfFrom) dfFrom.value = threeMonthsAgo.toISOString().slice(0,10);
+  if (dfTo) dfTo.value = today.toISOString().slice(0,10);
   loadDashboard();
   loadAllUsers();
   loadNotificationCount();
@@ -2298,15 +2270,45 @@ async function loadPendingApproval() {
 // ============================================================
 // 테이블 정렬 기능
 // ============================================================
-const _tableData = { pending: [], mydocs: [], search: [] };
-const _sortState = { pending: { key: null, dir: 'asc' }, mydocs: { key: null, dir: 'asc' }, search: { key: null, dir: 'asc' } };
+const _tableData = { pending: [], mydocs: [], search: [], users: [] };
+const _sortState = { pending: { key: null, dir: 'asc' }, mydocs: { key: null, dir: 'asc' }, search: { key: null, dir: 'asc' }, users: { key: null, dir: 'asc' } };
+const PAGE_SIZE = 30;
+const _currentPage = { pending: 1, mydocs: 1, search: 1 };
+
+function renderPaging(tableId, totalCount) {
+  const el = document.getElementById('paging-' + tableId);
+  if (!el) return;
+  const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+  if (totalPages <= 1) { el.innerHTML = totalCount > 0 ? `<span class="page-info">${totalCount}건</span>` : ''; return; }
+  const cur = _currentPage[tableId];
+  let html = `<span class="page-info">총 ${totalCount}건 (${cur}/${totalPages} 페이지)</span>`;
+  html += `<button ${cur<=1?'disabled':''} onclick="goPage('${tableId}',1)">«</button>`;
+  html += `<button ${cur<=1?'disabled':''} onclick="goPage('${tableId}',${cur-1})">‹</button>`;
+  // 페이지 번호 (최대 7개)
+  let start = Math.max(1, cur - 3), end = Math.min(totalPages, start + 6);
+  if (end - start < 6) start = Math.max(1, end - 6);
+  for (let i = start; i <= end; i++) {
+    html += `<button class="${i===cur?'active':''}" onclick="goPage('${tableId}',${i})">${i}</button>`;
+  }
+  html += `<button ${cur>=totalPages?'disabled':''} onclick="goPage('${tableId}',${cur+1})">›</button>`;
+  html += `<button ${cur>=totalPages?'disabled':''} onclick="goPage('${tableId}',${totalPages})">»</button>`;
+  el.innerHTML = html;
+}
+
+function goPage(tableId, page) {
+  _currentPage[tableId] = page;
+  const data = _tableData[tableId];
+  if (tableId === 'pending') renderPendingTable(data, true, page);
+  else if (tableId === 'mydocs') renderDocTable('myDocsTbody', data, true, true, page);
+  else if (tableId === 'search') renderDocTable('searchResultTbody', data, true, true, page);
+}
 
 function sortTable(tableId, key) {
   const state = _sortState[tableId];
   if (state.key === key) { state.dir = state.dir === 'asc' ? 'desc' : 'asc'; }
   else { state.key = key; state.dir = 'asc'; }
   // 헤더 아이콘 업데이트
-  const tableMap = { pending: 'pendingApprovalTbody', mydocs: 'myDocsTbody', search: 'searchResultTbody' };
+  const tableMap = { pending: 'pendingApprovalTbody', mydocs: 'myDocsTbody', search: 'searchResultTbody', users: 'userListTbody' };
   const table = document.getElementById(tableMap[tableId])?.closest('table');
   if (table) {
     table.querySelectorAll('.sortable-th').forEach(th => { th.classList.remove('sort-asc','sort-desc'); });
@@ -2327,29 +2329,34 @@ function sortTable(tableId, key) {
     if (va > vb) return state.dir === 'asc' ? 1 : -1;
     return 0;
   });
+  _tableData[tableId] = data;
+  if (_currentPage[tableId]) _currentPage[tableId] = 1; // 정렬 시 1페이지로
   // 다시 렌더
-  if (tableId === 'pending') renderPendingTable(data, true);
-  else if (tableId === 'mydocs') renderDocTable('myDocsTbody', data, true, true);
-  else if (tableId === 'search') renderDocTable('searchResultTbody', data, true, true);
+  if (tableId === 'pending') renderPendingTable(data, true, 1);
+  else if (tableId === 'mydocs') renderDocTable('myDocsTbody', data, true, true, 1);
+  else if (tableId === 'search') renderDocTable('searchResultTbody', data, true, true, 1);
+  else if (tableId === 'users') renderUserTable(data);
 }
 
-function renderPendingTable(docs, skipStore) {
+function renderPendingTable(docs, skipStore, page) {
   const tbody = document.getElementById('pendingApprovalTbody');
   clearPendingSelection();
   if (!skipStore) {
-    // 기본 정렬: 내가 결재할 차례인 문서 우선
     const uid = auth.currentUser?.uid;
     docs.sort((a, b) => {
       const aIsMyTurn = a.my_turn ? 0 : 1;
       const bIsMyTurn = b.my_turn ? 0 : 1;
       if (aIsMyTurn !== bIsMyTurn) return aIsMyTurn - bIsMyTurn;
-      // 같은 그룹 내에서는 요청일 최신순
       return (b.created_at || '').localeCompare(a.created_at || '');
     });
     _tableData.pending = docs;
+    _currentPage.pending = 1;
   }
-  if (!docs.length) { tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">결재 대기 문서가 없습니다.</td></tr>'; return; }
-  tbody.innerHTML = docs.map(d => {
+  if (!docs.length) { tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">결재 대기 문서가 없습니다.</td></tr>'; renderPaging('pending', 0); return; }
+  const pg = page || _currentPage.pending;
+  const start = (pg - 1) * PAGE_SIZE, end = start + PAGE_SIZE;
+  const pageData = docs.slice(start, end);
+  tbody.innerHTML = pageData.map(d => {
     const myTurnClass = d.my_turn ? 'style="background:#fffbe6"' : '';
     return `<tr ${myTurnClass}>
     <td><input type="checkbox" class="pending-check" value="${d.id}" data-title="${esc(d.title)}" onchange="updateBulkApproveBar()"></td>
@@ -2362,6 +2369,7 @@ function renderPendingTable(docs, skipStore) {
     <td><button class="btn btn-sm btn-outline-primary" onclick="viewDocument('${d.id}')"><i class="bi bi-eye"></i></button></td>
   </tr>`;
   }).join('');
+  renderPaging('pending', docs.length);
 }
 
 function toggleSelectAllPending() {
@@ -2469,21 +2477,23 @@ async function loadAllDocsToSearch() {
   } catch(ex) {}
 }
 
-function renderDocTable(tbodyId, docs, showCreator, skipStore) {
+function renderDocTable(tbodyId, docs, showCreator, skipStore, page) {
   const tbody = document.getElementById(tbodyId);
   const isAdmin = CURRENT_USER && CURRENT_USER.role === 'admin';
   const colSpan = 8;
-  // 데이터 저장 (정렬용)
+  const pagingId = tbodyId === 'myDocsTbody' ? 'mydocs' : 'search';
   if (!skipStore) {
-    if (tbodyId === 'myDocsTbody') _tableData.mydocs = docs;
-    else if (tbodyId === 'searchResultTbody') _tableData.search = docs;
+    if (tbodyId === 'myDocsTbody') { _tableData.mydocs = docs; _currentPage.mydocs = 1; }
+    else if (tbodyId === 'searchResultTbody') { _tableData.search = docs; _currentPage.search = 1; }
   }
-  // 전체선택 체크박스 표시/초기화
   const selectAllCb = document.getElementById('selectAll-' + tbodyId);
   if (selectAllCb) { selectAllCb.style.display = isAdmin ? '' : 'none'; selectAllCb.checked = false; selectAllCb.indeterminate = false; }
   updateBulkDeleteBar(tbodyId);
-  if (!docs.length) { tbody.innerHTML = `<tr><td colspan="${colSpan}" class="text-center text-muted py-4">문서가 없습니다.</td></tr>`; return; }
-  tbody.innerHTML = docs.map(d => {
+  if (!docs.length) { tbody.innerHTML = `<tr><td colspan="${colSpan}" class="text-center text-muted py-4">문서가 없습니다.</td></tr>`; renderPaging(pagingId, 0); return; }
+  const pg = page || _currentPage[pagingId];
+  const start = (pg - 1) * PAGE_SIZE, end = start + PAGE_SIZE;
+  const pageData = docs.slice(start, end);
+  tbody.innerHTML = pageData.map(d => {
     const rejCommentHtml = (d.status === 'rejected' && d.rejection_comment)
       ? `<br><small class="text-danger" style="font-size:10px"><i class="bi bi-x-circle me-1"></i>${esc(d.rejection_by ? d.rejection_by+': ' : '')}${esc(d.rejection_comment.length>40 ? d.rejection_comment.substring(0,40)+'…' : d.rejection_comment)}</small>` : '';
     const appCommentHtml = d.approval_comment
@@ -2503,6 +2513,7 @@ function renderDocTable(tbodyId, docs, showCreator, skipStore) {
       <td><button class="btn btn-sm btn-outline-primary" onclick="viewDocument('${d.id}')"><i class="bi bi-eye"></i></button></td>
     </tr>`;
   }).join('');
+  renderPaging(pagingId, docs.length);
 }
 
 function toggleSelectAll(tbodyId) {
@@ -3209,9 +3220,14 @@ async function loadAllUsers() {
 
 async function loadUsers() {
   await loadAllUsers();
+  _tableData.users = ALL_USERS;
+  renderUserTable(ALL_USERS);
+}
+
+function renderUserTable(users) {
   const tbody = document.getElementById('userListTbody');
-  if (!ALL_USERS.length) { tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">사용자가 없습니다.</td></tr>'; return; }
-  tbody.innerHTML = ALL_USERS.map(u => `<tr>
+  if (!users.length) { tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">사용자가 없습니다.</td></tr>'; return; }
+  tbody.innerHTML = users.map(u => `<tr>
     <td>${esc(u.username)}</td><td><strong>${esc(u.name)}</strong></td><td>${esc(u.department)}</td><td>${esc(u.position)}</td>
     <td><span class="badge ${u.role==='admin'?'bg-primary':'bg-secondary'}">${u.role==='admin'?'관리자':'사용자'}</span></td>
     <td>${u.signature_file_id ? '<i class="bi bi-check-circle text-success"></i>' : '<i class="bi bi-dash text-muted"></i>'}</td>
@@ -3499,12 +3515,7 @@ async function loadSettings() {
     loadDefaultApprovalStepsUI(s.default_approval_chain);
     // BOM 제품 수 표시
     loadBomProductCount();
-    // Google Drive 연결 상태 표시
-    const gds = document.getElementById('gdriveStatus');
-    if (gds) {
-      if (gdriveAccessToken && Date.now() < gdriveTokenExpiry) { gds.textContent = '✅ 연결됨'; gds.style.color = '#059669'; }
-      else { gds.textContent = '연결 안 됨'; gds.style.color = ''; }
-    }
+    // Google Drive는 GAS 중계 방식 — 항상 연결됨
     // 로그인 이력은 버튼 클릭 시 로드
   } catch(ex) {}
 }
@@ -3553,78 +3564,63 @@ async function saveDefaultApprovalChain() {
   } catch(ex) { hideLoading(); }
 }
 
-// 상단바 Google Drive 상태 업데이트
-function updateGdriveTopStatus() {
-  const wrap = document.getElementById('gdriveTopStatus');
-  const icon = document.getElementById('gdriveTopIcon');
-  const text = document.getElementById('gdriveTopText');
-  const btn = document.getElementById('gdriveTopBtn');
-  if (!wrap) return;
-  wrap.style.display = 'flex';
-  const connected = gdriveAccessToken && Date.now() < gdriveTokenExpiry;
-  if (connected) {
-    icon.className = 'bi bi-cloud-check-fill text-success';
-    text.textContent = 'Drive 연결됨';
-    text.className = 'text-success';
-    btn.style.display = 'none';
-  } else {
-    icon.className = 'bi bi-cloud-slash text-danger';
-    text.textContent = 'Drive 미연결';
-    text.className = 'text-danger';
-    btn.style.display = 'inline-block';
-  }
-  // 설정 페이지의 gdriveStatus도 업데이트
-  const gds = document.getElementById('gdriveStatus');
-  if (gds) {
-    if (connected) { gds.textContent = '✅ 연결됨'; gds.style.color = '#059669'; }
-    else { gds.textContent = '연결 안 됨'; gds.style.color = ''; }
-  }
-}
+// Google Drive는 GAS 중계 방식 — OAuth 토큰 관리 불필요
 
-// 5초마다 상단바 상태 갱신
-setInterval(updateGdriveTopStatus, 5000);
+// connectGoogleDrive — GAS 중계 방식으로 대체됨 (OAuth 불필요)
 
-// 로그인 직후 자동 Google Drive 연결
-function autoConnectGoogleDrive() {
-  if (gdriveAccessToken && Date.now() < gdriveTokenExpiry) return; // 이미 연결됨
-  if (typeof google === 'undefined' || !google.accounts) {
-    setTimeout(autoConnectGoogleDrive, 2000);
-    return;
-  }
-  connectGoogleDrive();
-}
+// ============================================================
+// 문서 일괄 삭제 (데이터 정리)
+// ============================================================
+let _bulkDeleteDocs = [];
 
-// 토큰 만료 감시 (5분마다 체크, 만료되면 자동 재연결)
-setInterval(() => {
-  if (!gdriveAccessToken) return;
-  if (Date.now() >= gdriveTokenExpiry) {
-    console.log('Google Drive 토큰 만료 → 자동 재연결');
-    gdriveAccessToken = null;
-    updateGdriveTopStatus();
-    autoConnectGoogleDrive();
-  }
-}, 60000 * 5);
-
-function connectGoogleDrive() {
+async function previewBulkDelete() {
+  const before = document.getElementById('bulkDeleteBefore').value;
+  if (!before) { showToast('기준일을 선택해주세요.', 'warning'); return; }
+  const statusFilter = document.getElementById('bulkDeleteStatus').value;
+  showLoading('조회 중...');
   try {
-    const client = google.accounts.oauth2.initTokenClient({
-      client_id: GDRIVE_CLIENT_ID,
-      scope: GDRIVE_SCOPES,
-      callback: (resp) => {
-        if (resp.error) {
-          showToast('Google Drive 연결 실패: ' + resp.error, 'danger');
-          return;
-        }
-        gdriveAccessToken = resp.access_token;
-        gdriveTokenExpiry = Date.now() + (resp.expires_in - 60) * 1000;
-        updateGdriveTopStatus();
-        showToast('Google Drive 연결 완료! 결재 승인 시 자동 저장됩니다.', 'success');
-      }
+    const snap = await db.collection('documents').where('status','!=','deleted').orderBy('status').orderBy('created_at','desc').get();
+    _bulkDeleteDocs = [];
+    snap.docs.forEach(d => {
+      const doc = { id: d.id, ...d.data() };
+      if (doc.created_at > before) return;
+      if (statusFilter !== 'all' && doc.status !== statusFilter) return;
+      _bulkDeleteDocs.push(doc);
     });
-    client.requestAccessToken();
-  } catch(e) {
-    showToast('Google Drive 연결 실패: ' + e.message, 'danger');
+    hideLoading();
+    document.getElementById('bulkDeleteCount').textContent = _bulkDeleteDocs.length;
+    document.getElementById('bulkDeletePreview').style.display = _bulkDeleteDocs.length > 0 ? 'block' : 'none';
+    if (!_bulkDeleteDocs.length) showToast('삭제 대상 문서가 없습니다.', 'info');
+  } catch(ex) { hideLoading(); showToast('조회 실패: ' + ex.message, 'danger'); }
+}
+
+async function executeBulkDelete() {
+  if (!_bulkDeleteDocs.length) return;
+  if (!confirm(_bulkDeleteDocs.length + '건의 문서를 삭제합니다.\n\n- Firestore: 소프트 삭제\n- Firebase Storage: 파일 삭제\n- Google Drive: 유지\n\n계속하시겠습니까?')) return;
+  showLoading('일괄 삭제 중... (0/' + _bulkDeleteDocs.length + ')');
+  let deleted = 0, failed = 0;
+  for (const doc of _bulkDeleteDocs) {
+    try {
+      // 1. Firestore 소프트 삭제
+      await db.collection('documents').doc(doc.id).update({ status: 'deleted', updated_at: fb_now() });
+      // 2. Firebase Storage 파일 삭제
+      if (doc.file_url) {
+        try { await storage.refFromURL(doc.file_url).delete(); } catch(e) { console.warn('Storage 원본 삭제 실패:', e.message); }
+      }
+      if (doc.pdf_url) {
+        try { await storage.refFromURL(doc.pdf_url).delete(); } catch(e) { console.warn('Storage PDF 삭제 실패:', e.message); }
+      }
+      deleted++;
+      if (deleted % 5 === 0) showLoading('일괄 삭제 중... (' + deleted + '/' + _bulkDeleteDocs.length + ')');
+    } catch(e) {
+      console.error('삭제 실패:', doc.id, e.message);
+      failed++;
+    }
   }
+  hideLoading();
+  showToast(deleted + '건 삭제 완료' + (failed ? ', ' + failed + '건 실패' : '') + '\nGoogle Drive 파일은 유지됩니다.', 'success');
+  document.getElementById('bulkDeletePreview').style.display = 'none';
+  _bulkDeleteDocs = [];
 }
 
 async function saveSettings() {
