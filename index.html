@@ -276,6 +276,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
           <div class="user-name" id="sidebarUserName">-</div>
           <div class="user-info"><span id="sidebarUserDept">-</span> · <span id="sidebarUserPos">-</span></div>
         </div>
+        <button class="btn btn-sm btn-outline-light flex-shrink-0" onclick="showMyProfileModal()" title="내 정보"><i class="bi bi-gear"></i></button>
         <button class="btn btn-sm btn-outline-light flex-shrink-0" onclick="handleLogout()" title="로그아웃"><i class="bi bi-box-arrow-right"></i></button>
       </div>
     </div>
@@ -835,6 +836,40 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
     <div class="modal-header"><h5 class="modal-title"><i class="bi bi-x-circle text-danger me-2"></i>문서 반려</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
     <div class="modal-body"><label class="form-label fw-semibold">반려 사유 <span class="text-danger">*</span></label><textarea class="form-control" id="rejectComment" rows="3" placeholder="반려 사유를 입력하세요"></textarea></div>
     <div class="modal-footer"><button class="btn btn-outline-secondary" data-bs-dismiss="modal">취소</button><button class="btn btn-danger" onclick="doReject()">반려</button></div>
+  </div></div>
+</div>
+
+<!-- 모달: 내 정보 수정 (모든 사용자) -->
+<div class="modal fade" id="myProfileModal" tabindex="-1">
+  <div class="modal-dialog"><div class="modal-content">
+    <div class="modal-header"><h5 class="modal-title"><i class="bi bi-person-circle me-2"></i>내 정보 수정</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">
+      <div class="row g-3">
+        <div class="col-6"><label class="form-label">아이디</label><input type="text" class="form-control" id="myUsername" disabled style="background:#f0f0f0"><small class="text-muted">아이디는 변경 불가</small></div>
+        <div class="col-6"><label class="form-label">이름 <span class="text-danger">*</span></label><input type="text" class="form-control" id="myName"></div>
+        <div class="col-6"><label class="form-label">부서 <span class="text-danger">*</span></label><input type="text" class="form-control" id="myDept"></div>
+        <div class="col-6"><label class="form-label">직책</label><input type="text" class="form-control" id="myPosition"></div>
+        <div class="col-12"><hr class="my-1"></div>
+        <div class="col-6"><label class="form-label fw-semibold">현재 비밀번호 <span class="text-danger">*</span></label><input type="password" class="form-control" id="myCurrentPw" placeholder="현재 비밀번호 입력"></div>
+        <div class="col-6"><label class="form-label fw-semibold">새 비밀번호</label><input type="password" class="form-control" id="myNewPw" placeholder="변경 시에만 입력 (6자 이상)"></div>
+        <div class="col-12">
+          <label class="form-label fw-semibold">서명 이미지</label>
+          <div class="drop-zone p-3" id="myProfileSigZone" style="border:2px dashed #8ababa;border-radius:8px;text-align:center;cursor:pointer;background:#f8fffe">
+            <i class="bi bi-pen" style="font-size:24px;color:#8ababa"></i>
+            <p class="mt-1 mb-0 small text-muted">서명 이미지를 드래그하거나 클릭</p>
+            <input type="file" id="myProfileSigInput" accept="image/*" style="display:none">
+          </div>
+          <div id="myProfileSigPreview" class="mt-2 text-center" style="display:none">
+            <img id="myProfileSigImg" style="max-width:120px;max-height:60px;border:1px solid #ddd;border-radius:4px;padding:4px">
+            <button class="btn btn-sm btn-link text-danger" onclick="document.getElementById('myProfileSigPreview').style.display='none';myProfileSigData=null">제거</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">취소</button>
+      <button type="button" class="btn btn-primary" onclick="saveMyProfile()"><i class="bi bi-check me-1"></i>저장</button>
+    </div>
   </div></div>
 </div>
 
@@ -1980,16 +2015,31 @@ async function fb_settingsUpdate(data) {
 // 대시보드
 // ============================================================
 async function fb_dashboard() {
-  const snap = await db.collection('documents').where('status','!=','deleted').get();
-  const docs = snap.docs.map(d=>d.data());
+  const uid = fbAuth.currentUser ? fbAuth.currentUser.uid : '';
+  // 문서 조회
+  const docSnap = await db.collection('documents').where('status','!=','deleted').get();
+  const docs = docSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+  // 결재이력 조회 (내 결재 대기)
+  const appSnap = await db.collection('approvals').where('approver_id','==',uid).where('status','==','pending').get();
+  const myPendingApprovals = appSnap.docs.map(d => d.data());
+  const pendingDocIds = [...new Set(myPendingApprovals.map(a => a.doc_id))];
+  // 내가 작성한 문서
+  const myDocs = docs.filter(d => d.creator_id === uid);
+  // 결재 대기 문서 목록 (내가 결재해야 할)
+  const pendingDocs = docs.filter(d => pendingDocIds.includes(d.id) && d.status === 'pending');
+  // 최근 문서
+  const recentDocs = [...docs].sort((a,b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 10);
   return {
-    success:true,
-    total_docs: docs.length,
-    pending_docs: docs.filter(d=>d.status==='pending').length,
-    approved_docs: docs.filter(d=>d.status==='approved').length,
-    rejected_docs: docs.filter(d=>d.status==='rejected').length,
-    draft_docs: docs.filter(d=>d.status==='draft').length,
-    recent_docs: docs.sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).slice(0,10)
+    success: true,
+    stats: {
+      pending_my_approval: pendingDocs.length,
+      my_pending: myDocs.filter(d => d.status === 'pending').length,
+      my_approved: myDocs.filter(d => d.status === 'approved').length,
+      my_rejected: myDocs.filter(d => d.status === 'rejected').length,
+      total: docs.length
+    },
+    pending_docs: pendingDocs.slice(0, 10),
+    recent_docs: recentDocs
   };
 }
 
@@ -3234,6 +3284,95 @@ function renderUserTable(users) {
     <td>${formatDate(u.created_at)}</td>
     <td><button class="btn btn-sm btn-outline-primary me-1" onclick='editUser(${JSON.stringify(u).replace(/'/g,"&apos;")})'><i class="bi bi-pencil"></i></button><button class="btn btn-sm btn-outline-danger" onclick="deleteUser('${u.id}','${esc(u.name)}')"><i class="bi bi-trash"></i></button></td>
   </tr>`).join('');
+}
+
+// ── 내 정보 수정 (모든 사용자) ──
+var myProfileSigData = null;
+
+function showMyProfileModal() {
+  if (!CURRENT_USER) return;
+  document.getElementById('myUsername').value = CURRENT_USER.username || '';
+  document.getElementById('myName').value = CURRENT_USER.name || '';
+  document.getElementById('myDept').value = CURRENT_USER.department || '';
+  document.getElementById('myPosition').value = CURRENT_USER.position || '';
+  document.getElementById('myCurrentPw').value = '';
+  document.getElementById('myNewPw').value = '';
+  myProfileSigData = null;
+  // 기존 서명 표시
+  const u = ALL_USERS.find(x => x.id === CURRENT_USER.id);
+  if (u && (u.signature_url || u.signature_file_id)) {
+    document.getElementById('myProfileSigPreview').style.display = 'block';
+    document.getElementById('myProfileSigImg').src = u.signature_url || u.signature_file_id;
+  } else {
+    document.getElementById('myProfileSigPreview').style.display = 'none';
+  }
+  new bootstrap.Modal(document.getElementById('myProfileModal')).show();
+}
+
+// 서명 드래그/클릭 이벤트
+document.addEventListener('DOMContentLoaded', () => {
+  const zone = document.getElementById('myProfileSigZone');
+  const input = document.getElementById('myProfileSigInput');
+  if (zone && input) {
+    zone.addEventListener('click', () => input.click());
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.style.borderColor = '#006666'; });
+    zone.addEventListener('dragleave', () => { zone.style.borderColor = '#8ababa'; });
+    zone.addEventListener('drop', e => { e.preventDefault(); zone.style.borderColor = '#8ababa'; if (e.dataTransfer.files[0]) handleMyProfileSig(e.dataTransfer.files[0]); });
+    input.addEventListener('change', e => { if (e.target.files[0]) handleMyProfileSig(e.target.files[0]); });
+  }
+});
+
+function handleMyProfileSig(file) {
+  if (!file.type.startsWith('image/')) { showToast('이미지 파일만 업로드 가능합니다.', 'warning'); return; }
+  const reader = new FileReader();
+  reader.onload = e => {
+    const base64 = e.target.result.split(',')[1];
+    myProfileSigData = { data: base64, type: file.type };
+    document.getElementById('myProfileSigPreview').style.display = 'block';
+    document.getElementById('myProfileSigImg').src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+async function saveMyProfile() {
+  const currentPw = document.getElementById('myCurrentPw').value;
+  const newPw = document.getElementById('myNewPw').value;
+  const newName = document.getElementById('myName').value.trim();
+  const newDept = document.getElementById('myDept').value.trim();
+  const newPosition = document.getElementById('myPosition').value.trim();
+  if (!currentPw) { showToast('현재 비밀번호를 입력해주세요.', 'warning'); return; }
+  if (!newName || !newDept) { showToast('이름과 부서는 필수입니다.', 'warning'); return; }
+  if (newPw && newPw.length < 6) { showToast('새 비밀번호는 최소 6자 이상이어야 합니다.', 'warning'); return; }
+  showLoading('저장 중...');
+  try {
+    // 이름/부서/직책 변경 (Firestore)
+    await db.collection('users').doc(CURRENT_USER.id).update({
+      name: newName,
+      department: newDept,
+      position: newPosition
+    });
+    CURRENT_USER.name = newName;
+    CURRENT_USER.department = newDept;
+    CURRENT_USER.position = newPosition;
+    // 사이드바 즉시 반영
+    document.getElementById('sidebarUserName').textContent = newName;
+    document.getElementById('sidebarUserDept').textContent = newDept;
+    document.getElementById('sidebarUserPos').textContent = newPosition;
+    document.getElementById('topBarUser').textContent = newName;
+    // 비밀번호 변경
+    if (newPw) {
+      const result = await api('change_password', { current_password: currentPw, new_password: newPw });
+      if (!result.success) { hideLoading(); showToast(result.error, 'danger'); return; }
+    }
+    // 서명 업로드
+    if (myProfileSigData) {
+      await api('user_signature_upload', { target_id: CURRENT_USER.id, image_data: myProfileSigData.data, mime_type: myProfileSigData.type });
+    }
+    hideLoading();
+    bootstrap.Modal.getInstance(document.getElementById('myProfileModal')).hide();
+    showToast('내 정보가 수정되었습니다.');
+    await loadAllUsers();
+  } catch(ex) { hideLoading(); showToast('오류: ' + ex.message, 'danger'); }
 }
 
 function showAddUserModal() {
