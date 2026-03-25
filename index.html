@@ -2015,10 +2015,10 @@ async function fb_settingsUpdate(data) {
 // 대시보드
 // ============================================================
 async function fb_dashboard() {
-  const uid = fbAuth.currentUser ? fbAuth.currentUser.uid : '';
-  // 문서 조회
-  const docSnap = await db.collection('documents').where('status','!=','deleted').get();
-  const docs = docSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const uid = auth.currentUser ? auth.currentUser.uid : '';
+  // 문서 조회 (삭제된 문서 클라이언트에서 필터 — 인덱스 불필요)
+  const docSnap = await db.collection('documents').get();
+  const docs = docSnap.docs.map(d => ({ id: d.id, ...d.data() })).filter(d => d.status !== 'deleted');
   // 결재이력 조회 (내 결재 대기)
   const appSnap = await db.collection('approvals').where('approver_id','==',uid).where('status','==','pending').get();
   const myPendingApprovals = appSnap.docs.map(d => d.data());
