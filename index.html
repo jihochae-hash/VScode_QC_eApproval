@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SaehanSign - 새한 문서 전자결재 시스템</title>
+<link rel="icon" type="image/png" href="logo.png">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
@@ -497,7 +498,8 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
         </div>
         <div id="bulkBar-myDocsTbody" style="display:none" class="d-flex align-items-center gap-2 mb-2 px-1">
           <span class="text-muted small" id="bulkCount-myDocsTbody"></span>
-          <button class="btn btn-sm btn-danger" onclick="bulkDeleteDocs('myDocsTbody')"><i class="bi bi-trash me-1"></i>선택 삭제</button>
+          <button class="btn btn-sm btn-primary" onclick="bulkDownloadPdfs('myDocsTbody')"><i class="bi bi-download me-1"></i>PDF 일괄저장</button>
+          <button class="btn btn-sm btn-danger bulk-delete-btn" onclick="bulkDeleteDocs('myDocsTbody')"><i class="bi bi-trash me-1"></i>선택 삭제</button>
           <button class="btn btn-sm btn-outline-secondary" onclick="clearSelection('myDocsTbody')">취소</button>
         </div>
         <div class="table-wrap">
@@ -527,7 +529,8 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
         </div></div>
         <div id="bulkBar-searchResultTbody" style="display:none" class="d-flex align-items-center gap-2 mb-2 px-1">
           <span class="text-muted small" id="bulkCount-searchResultTbody"></span>
-          <button class="btn btn-sm btn-danger" onclick="bulkDeleteDocs('searchResultTbody')"><i class="bi bi-trash me-1"></i>선택 삭제</button>
+          <button class="btn btn-sm btn-primary" onclick="bulkDownloadPdfs('searchResultTbody')"><i class="bi bi-download me-1"></i>PDF 일괄저장</button>
+          <button class="btn btn-sm btn-danger bulk-delete-btn" onclick="bulkDeleteDocs('searchResultTbody')"><i class="bi bi-trash me-1"></i>선택 삭제</button>
           <button class="btn btn-sm btn-outline-secondary" onclick="clearSelection('searchResultTbody')">취소</button>
         </div>
         <div class="table-wrap">
@@ -2537,7 +2540,7 @@ function renderDocTable(tbodyId, docs, showCreator, skipStore, page) {
     else if (tbodyId === 'searchResultTbody') { _tableData.search = docs; _currentPage.search = 1; }
   }
   const selectAllCb = document.getElementById('selectAll-' + tbodyId);
-  if (selectAllCb) { selectAllCb.style.display = isAdmin ? '' : 'none'; selectAllCb.checked = false; selectAllCb.indeterminate = false; }
+  if (selectAllCb) { selectAllCb.style.display = ''; selectAllCb.checked = false; selectAllCb.indeterminate = false; }
   updateBulkDeleteBar(tbodyId);
   if (!docs.length) { tbody.innerHTML = `<tr><td colspan="${colSpan}" class="text-center text-muted py-4">문서가 없습니다.</td></tr>`; renderPaging(pagingId, 0); return; }
   const pg = page || _currentPage[pagingId];
@@ -2549,9 +2552,7 @@ function renderDocTable(tbodyId, docs, showCreator, skipStore, page) {
     const appCommentHtml = d.approval_comment
       ? `<br><small class="text-success" style="font-size:10px"><i class="bi bi-check-circle me-1"></i>${esc(d.approval_by ? d.approval_by+': ' : '')}${esc(d.approval_comment.length>40 ? d.approval_comment.substring(0,40)+'…' : d.approval_comment)}</small>` : '';
     const commentHtml = rejCommentHtml + appCommentHtml;
-    const checkboxTd = isAdmin
-      ? `<td><input type="checkbox" class="doc-check" data-tbody="${tbodyId}" value="${d.id}" data-title="${esc(d.title)}" onchange="updateBulkDeleteBar('${tbodyId}')"></td>`
-      : '<td></td>';
+    const checkboxTd = `<td><input type="checkbox" class="doc-check" data-tbody="${tbodyId}" value="${d.id}" data-title="${esc(d.title)}" data-status="${d.status||''}" onchange="updateBulkDeleteBar('${tbodyId}')"></td>`;
     return `<tr>
       ${checkboxTd}
       <td><span class="fw-semibold">${esc(d.doc_number)}</span></td>
@@ -2578,7 +2579,12 @@ function updateBulkDeleteBar(tbodyId) {
   const bar = document.getElementById('bulkBar-' + tbodyId);
   const countEl = document.getElementById('bulkCount-' + tbodyId);
   const selectAll = document.getElementById('selectAll-' + tbodyId);
-  if (bar) bar.style.display = checked.length > 0 ? '' : 'none';
+  if (bar) {
+    bar.style.display = checked.length > 0 ? '' : 'none';
+    // 삭제 버튼은 관리자만
+    const delBtn = bar.querySelector('.bulk-delete-btn');
+    if (delBtn) delBtn.style.display = (CURRENT_USER && CURRENT_USER.role === 'admin') ? '' : 'none';
+  }
   if (countEl) countEl.textContent = checked.length + '개 선택됨';
   if (selectAll) {
     selectAll.indeterminate = checked.length > 0 && checked.length < all.length;
@@ -2591,6 +2597,103 @@ function clearSelection(tbodyId) {
   const selectAll = document.getElementById('selectAll-' + tbodyId);
   if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
   updateBulkDeleteBar(tbodyId);
+}
+
+// ── PDF 일괄 저장 (폴더 선택 → 개별 파일 저장) ──
+async function bulkDownloadPdfs(tbodyId) {
+  const checked = [...document.querySelectorAll(`.doc-check[data-tbody="${tbodyId}"]:checked`)];
+  if (!checked.length) { showToast('문서를 선택해주세요.', 'warning'); return; }
+
+  // 승인 완료 문서만 필터
+  const approvedIds = [];
+  const skippedCount = { val: 0 };
+  checked.forEach(cb => {
+    const status = cb.dataset.status || '';
+    if (status === 'approved') approvedIds.push(cb.value);
+    else skippedCount.val++;
+  });
+  if (!approvedIds.length) { showToast('승인 완료된 문서만 PDF 저장 가능합니다.', 'warning'); return; }
+
+  // 폴더 선택 (Chrome/Edge - File System Access API)
+  let dirHandle = null;
+  if (window.showDirectoryPicker) {
+    try {
+      dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    } catch(e) {
+      if (e.name === 'AbortError') return; // 사용자 취소
+      showToast('폴더 선택 실패: ' + e.message, 'danger'); return;
+    }
+  }
+
+  const msg = skippedCount.val > 0
+    ? `승인 완료 ${approvedIds.length}건 저장 시작 (미승인 ${skippedCount.val}건 제외)`
+    : `${approvedIds.length}건 PDF 저장 시작`;
+  showToast(msg, 'info');
+  startSync();
+
+  let success = 0, noPdf = 0;
+  for (let i = 0; i < approvedIds.length; i++) {
+    try {
+      const detail = await api('doc_detail', { doc_id: approvedIds[i] });
+      if (!detail.success) { noPdf++; continue; }
+      const doc = detail.document;
+
+      // PDF URL 찾기 (여러 필드 시도)
+      let pdfBytes = null;
+      const urls = [doc.pdf_url, doc.pdf_storage_url, doc.file_url].filter(Boolean);
+
+      for (const url of urls) {
+        try {
+          const resp = await fetch(url);
+          if (resp.ok) { pdfBytes = await resp.arrayBuffer(); break; }
+        } catch(e) {}
+      }
+
+      // URL 실패 시 Storage path로 직접 시도
+      if (!pdfBytes) {
+        const paths = [doc.pdf_storage_path, doc.file_storage_path].filter(Boolean);
+        for (const path of paths) {
+          try {
+            const directUrl = await storage.ref(path).getDownloadURL();
+            const resp = await fetch(directUrl);
+            if (resp.ok) { pdfBytes = await resp.arrayBuffer(); break; }
+          } catch(e) {}
+        }
+      }
+
+      if (!pdfBytes) { noPdf++; continue; }
+
+      const fileName = (doc.doc_number || 'doc') + '_' + (doc.title || '문서').replace(/[\\/:*?"<>|]/g, '_') + '.pdf';
+
+      if (dirHandle) {
+        const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(pdfBytes);
+        await writable.close();
+      } else {
+        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = fileName;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        await new Promise(r => setTimeout(r, 300));
+      }
+      success++;
+      console.log('PDF 저장 성공 (' + (i+1) + '/' + approvedIds.length + '): ' + fileName);
+    } catch(e) {
+      console.error('PDF 저장 실패 (' + (i+1) + '/' + approvedIds.length + '):', e);
+      noPdf++;
+    }
+    try { updateSyncProgress(Math.round(((i + 1) / approvedIds.length) * 95)); } catch(e) {}
+  }
+
+  try { endSync(); } catch(e) {}
+  if (success > 0) {
+    showToast(`${success}건 PDF 저장 완료`, 'success');
+  } else {
+    showToast('PDF 저장에 실패했습니다. 브라우저 콘솔(F12)을 확인해주세요.', 'danger');
+  }
 }
 
 async function bulkDeleteDocs(tbodyId) {
