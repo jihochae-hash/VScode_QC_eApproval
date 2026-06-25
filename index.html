@@ -939,6 +939,41 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
           </div>
         </div>
 
+        <!-- 문서 종류별 결재란 위치 -->
+        <div class="card mb-4">
+          <div class="card-header"><i class="bi bi-stamp me-2"></i>문서 종류별 결재란 위치</div>
+          <div class="card-body">
+            <p class="text-muted" style="font-size:12px">결재란이 찍히는 위치를 문서 종류별로 지정합니다. 기본값은 <b>우측 하단</b>(현재 위치)입니다.<br>9개 위치 중 선택하고, 필요하면 mm 미세조정·크기로 양식 칸에 정확히 맞추세요. (PDF 1페이지 기준)</p>
+            <div class="mb-3" style="max-width:320px">
+              <label class="form-label" style="font-size:12px">문서 종류 선택</label>
+              <select class="form-select form-select-sm" id="catStampCategory" onchange="renderStampPositionEditor()"></select>
+            </div>
+            <div class="row g-4">
+              <div class="col-auto">
+                <label class="form-label d-block" style="font-size:12px">위치</label>
+                <div id="stampAnchorGrid" style="display:inline-grid;grid-template-columns:repeat(3,46px);grid-template-rows:repeat(3,38px);gap:5px;"></div>
+              </div>
+              <div class="col">
+                <label class="form-label d-block" style="font-size:12px">미세조정 / 크기</label>
+                <div class="d-flex align-items-center gap-2 mb-2" style="font-size:12px">
+                  <span style="width:88px">가로(+오른쪽)</span><input type="number" step="1" class="form-control form-control-sm" id="stampDx" style="width:90px" value="0"><span>mm</span>
+                </div>
+                <div class="d-flex align-items-center gap-2 mb-2" style="font-size:12px">
+                  <span style="width:88px">세로(+위쪽)</span><input type="number" step="1" class="form-control form-control-sm" id="stampDy" style="width:90px" value="0"><span>mm</span>
+                </div>
+                <div class="d-flex align-items-center gap-2" style="font-size:12px">
+                  <span style="width:88px">크기</span><input type="number" step="5" min="30" max="300" class="form-control form-control-sm" id="stampScale" style="width:90px" value="100"><span>%</span>
+                </div>
+              </div>
+            </div>
+            <div class="d-flex gap-2 mt-3">
+              <button class="btn btn-sm btn-primary" onclick="saveStampPosition()"><i class="bi bi-check me-1"></i>이 종류 위치 저장</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="resetStampPosition()"><i class="bi bi-arrow-counterclockwise me-1"></i>기본값(우측 하단)으로</button>
+            </div>
+            <div class="mt-2"><small class="text-muted" id="stampPosHint" style="font-size:11px"></small></div>
+          </div>
+        </div>
+
       </div>
 
     </div>
@@ -1160,6 +1195,18 @@ let CATEGORY_APPROVAL_CHAINS = {}; // 문서 종류별 결재선 { '<종류코�
 let AUTHOR_STEP_NAME = '작성'; // 기본 작성칸(작성자 서명칸) 제목
 let CATEGORY_AUTHOR_LABELS = {}; // 문서 종류별 작성칸 제목 { '<종류코드>': '작성' }
 let STAMP_DISPLAY = { dept: true, name: true, position: true, date: true };
+// 문서 종류별 결재란 위치 { '<종류코드>': { anchor:'br', dx:0, dy:0, scale:100 } }
+// anchor: 첫글자=세로(t/m/b), 둘째글자=가로(l/c/r). 기본 br=우측하단(현재 위치)
+let STAMP_POSITIONS = {};
+function getStampPos(category) {
+  const p = (STAMP_POSITIONS && STAMP_POSITIONS[category]) || {};
+  return {
+    anchor: p.anchor || 'br',
+    dx: Number(p.dx) || 0,   // 가로 미세조정 mm (+오른쪽)
+    dy: Number(p.dy) || 0,   // 세로 미세조정 mm (+위쪽)
+    scale: Number(p.scale) || 100  // 크기 배율 %
+  };
+}
 let bomSearchTimer = null;
 
 // ============================================================
@@ -1831,8 +1878,8 @@ async function fb_autoSavePdf(docId) {
   // 원본 파일 다운로드
   const resp = await fetch(doc.file_url);
   const origBytes = new Uint8Array(await resp.arrayBuffer());
-  // PDF 결재란 삽입
-  const stampedBytes = await fb_addStampToPdf(origBytes, approvals, doc.file_type);
+  // PDF 결재란 삽입 (문서 종류별 위치 적용)
+  const stampedBytes = await fb_addStampToPdf(origBytes, approvals, doc.file_type, getStampPos(doc.category));
   // Firebase Storage에 설정 경로대로 업로드
   const pdfBlob = new Blob([stampedBytes], {type:'application/pdf'});
   const storagePath = await fb_getPdfStoragePath(doc);
@@ -1923,7 +1970,7 @@ async function fb_renderStampImage(approvals) {
   return canvas;
 }
 
-async function fb_addStampToPdf(fileBytes, approvals, fileType) {
+async function fb_addStampToPdf(fileBytes, approvals, fileType, posCfg) {
   const { PDFDocument } = PDFLib;
   let pdfDoc;
   if(fileType==='pdf') {
@@ -1951,22 +1998,43 @@ async function fb_addStampToPdf(fileBytes, approvals, fileType) {
   const stampBytes = Uint8Array.from(atob(stampBase64), c => c.charCodeAt(0));
   const stampImage = await pdfDoc.embedPng(stampBytes);
 
-  // 결재란 크기 계산: 1.6배 (기본의 2배에서 80%)
+  // 결재란 크기 계산: 1.6배 (기본의 2배에서 80%) × 사용자 지정 배율
+  const cfg = posCfg || { anchor:'br', dx:0, dy:0, scale:100 };
   const cssW = stampCanvas.width / 4;
   const cssH = stampCanvas.height / 4;
-  const scale = 1.6;
-  const stampW = cssW * 0.75 * scale;
-  const stampH = cssH * 0.75 * scale;
+  const baseScale = 1.6;
+  const userScale = (Number(cfg.scale) || 100) / 100;
+  const stampW = cssW * 0.75 * baseScale * userScale;
+  const stampH = cssH * 0.75 * baseScale * userScale;
 
   // 페이지 초과 방지: 결재란이 페이지보다 넓으면 축소
-  const maxW = width - 85 - 20; // 우측여백3cm + 좌측최소여백
+  const margin = 85;            // 기본 여백 3cm = 85pt
+  const MM = 2.834645;          // 1mm = 2.8346pt
+  const maxW = width - margin - 20;
   const finalScale = stampW > maxW ? maxW / stampW : 1;
   const finalW = stampW * finalScale;
   const finalH = stampH * finalScale;
 
-  // 우측 하단 배치 (여백: 오른쪽 3cm=85pt, 아래 3cm=85pt)
-  const stampX = width - finalW - 85;
-  const stampY = 85; // 하단 여백 3cm
+  // 문서 종류별 위치(앵커) 계산 — 좌표 원점은 좌측 하단(0,0), Y는 위로 증가
+  const anchor = (cfg.anchor || 'br');
+  const v = anchor.charAt(0); // t/m/b (세로)
+  const h = anchor.charAt(1); // l/c/r (가로)
+  let stampX;
+  if (h === 'l') stampX = margin;
+  else if (h === 'c') stampX = (width - finalW) / 2;
+  else stampX = width - finalW - margin; // r (기본)
+  let stampY;
+  if (v === 't') stampY = height - finalH - margin;
+  else if (v === 'm') stampY = (height - finalH) / 2;
+  else stampY = margin; // b (기본)
+
+  // 미세조정 (mm): 가로 +오른쪽 / 세로 +위쪽
+  stampX += (Number(cfg.dx) || 0) * MM;
+  stampY += (Number(cfg.dy) || 0) * MM;
+
+  // 페이지 밖으로 완전히 벗어나지 않도록 보정
+  stampX = Math.max(2, Math.min(stampX, width - finalW - 2));
+  stampY = Math.max(2, Math.min(stampY, height - finalH - 2));
 
   // 흰 배경 (원본 내용 가리기)
   page.drawRectangle({ x: stampX-1, y: stampY-1, width: finalW+2, height: finalH+2,
@@ -2053,7 +2121,7 @@ async function fb_generatePdf(data) {
   approvals = await fb_enrichApprovals(approvals);
   const resp = await fetch(doc.file_url);
   const origBytes = new Uint8Array(await resp.arrayBuffer());
-  const stampedBytes = await fb_addStampToPdf(origBytes, approvals, doc.file_type);
+  const stampedBytes = await fb_addStampToPdf(origBytes, approvals, doc.file_type, getStampPos(doc.category));
   // 큰 PDF 안전한 base64 변환 (btoa 대신 chunk 처리)
   const b64 = await fb_uint8ToBase64(stampedBytes);
   return { success:true, pdf_base64:b64, file_name:(doc.doc_number||'doc')+'_'+(doc.title||'')+'.pdf' };
@@ -4048,6 +4116,9 @@ async function loadSettings() {
     // 문서 종류별 결재선 로드
     try { CATEGORY_APPROVAL_CHAINS = JSON.parse(s.category_approval_chains || '{}'); } catch(e) { CATEGORY_APPROVAL_CHAINS = {}; }
     loadCategoryApprovalUI();
+    // 문서 종류별 결재란 위치 로드
+    try { STAMP_POSITIONS = JSON.parse(s.category_stamp_positions || '{}'); } catch(e) { STAMP_POSITIONS = {}; }
+    loadStampPositionUI();
     // BOM 제품 수 표시
     loadBomProductCount();
     // Google Drive는 GAS 중계 방식 — 항상 연결됨
@@ -4200,6 +4271,91 @@ async function resetCategoryApprovalChain() {
     } });
     hideLoading();
     if (result.success) { showToast('기본 결재선을 사용하도록 변경되었습니다.'); renderCategoryApprovalEditor(); }
+    else showToast(result.error, 'danger');
+  } catch(ex) { hideLoading(); }
+}
+
+// ── 문서 종류별 결재란 위치 ─────────────────────────────────
+const STAMP_ANCHORS = [
+  { a:'tl', label:'좌상' }, { a:'tc', label:'중상' }, { a:'tr', label:'우상' },
+  { a:'ml', label:'좌중' }, { a:'mc', label:'중앙' }, { a:'mr', label:'우중' },
+  { a:'bl', label:'좌하' }, { a:'bc', label:'중하' }, { a:'br', label:'우하' }
+];
+let _stampAnchor = 'br';
+
+function buildStampAnchorGrid() {
+  const grid = document.getElementById('stampAnchorGrid');
+  if (!grid || grid.dataset.built) return;
+  grid.innerHTML = STAMP_ANCHORS.map(o =>
+    `<button type="button" class="btn btn-outline-secondary p-0 stamp-anchor-btn" data-anchor="${o.a}" onclick="selectStampAnchor('${o.a}')" style="font-size:11px;line-height:1.1">${o.label}</button>`
+  ).join('');
+  grid.dataset.built = '1';
+}
+
+function selectStampAnchor(a) {
+  _stampAnchor = a;
+  document.querySelectorAll('#stampAnchorGrid .stamp-anchor-btn').forEach(btn => {
+    const on = btn.dataset.anchor === a;
+    btn.classList.toggle('btn-primary', on);
+    btn.classList.toggle('btn-outline-secondary', !on);
+  });
+}
+
+function loadStampPositionUI() {
+  const sel = document.getElementById('catStampCategory');
+  if (!sel) return;
+  buildStampAnchorGrid();
+  const cur = sel.value;
+  sel.innerHTML = DOC_CATEGORIES.map(c => `<option value="${esc(c.value)}">${esc(c.label)}</option>`).join('');
+  if (cur) sel.value = cur;
+  renderStampPositionEditor();
+}
+
+function renderStampPositionEditor() {
+  const cat = document.getElementById('catStampCategory').value;
+  const cfg = getStampPos(cat); // 미설정 시 기본값(br,0,0,100)
+  selectStampAnchor(cfg.anchor);
+  document.getElementById('stampDx').value = cfg.dx;
+  document.getElementById('stampDy').value = cfg.dy;
+  document.getElementById('stampScale').value = cfg.scale;
+  const hint = document.getElementById('stampPosHint');
+  if (hint) {
+    const custom = STAMP_POSITIONS && STAMP_POSITIONS[cat];
+    const name = (STAMP_ANCHORS.find(o => o.a === cfg.anchor) || {}).label || '';
+    hint.textContent = custom ? `현재 설정: ${name}` : '전용 설정 없음 → 기본값(우하)이 적용됩니다.';
+  }
+}
+
+async function saveStampPosition() {
+  const cat = document.getElementById('catStampCategory').value;
+  if (!cat) { showToast('문서 종류를 선택해주세요.', 'warning'); return; }
+  const cfg = {
+    anchor: _stampAnchor || 'br',
+    dx: Number(document.getElementById('stampDx').value) || 0,
+    dy: Number(document.getElementById('stampDy').value) || 0,
+    scale: Number(document.getElementById('stampScale').value) || 100
+  };
+  // 완전 기본값이면 저장하지 않고 제거(깔끔 유지)
+  if (cfg.anchor === 'br' && cfg.dx === 0 && cfg.dy === 0 && cfg.scale === 100) delete STAMP_POSITIONS[cat];
+  else STAMP_POSITIONS[cat] = cfg;
+  showLoading('저장 중...');
+  try {
+    const result = await api('settings_update', { settings: { category_stamp_positions: JSON.stringify(STAMP_POSITIONS) } });
+    hideLoading();
+    if (result.success) { showToast('결재란 위치가 저장되었습니다.'); renderStampPositionEditor(); }
+    else showToast(result.error, 'danger');
+  } catch(ex) { hideLoading(); }
+}
+
+async function resetStampPosition() {
+  const cat = document.getElementById('catStampCategory').value;
+  if (!cat) return;
+  delete STAMP_POSITIONS[cat];
+  showLoading('저장 중...');
+  try {
+    const result = await api('settings_update', { settings: { category_stamp_positions: JSON.stringify(STAMP_POSITIONS) } });
+    hideLoading();
+    if (result.success) { showToast('기본값(우측 하단)으로 변경되었습니다.'); renderStampPositionEditor(); }
     else showToast(result.error, 'danger');
   } catch(ex) { hideLoading(); }
 }
@@ -4450,6 +4606,7 @@ async function loadCategoriesFromServer() {
       try { CATEGORY_APPROVAL_CHAINS = JSON.parse(s.category_approval_chains || '{}'); } catch(e) {}
       AUTHOR_STEP_NAME = s.author_step_name || '작성';
       try { CATEGORY_AUTHOR_LABELS = JSON.parse(s.category_author_labels || '{}'); } catch(e) {}
+      try { STAMP_POSITIONS = JSON.parse(s.category_stamp_positions || '{}'); } catch(e) {}
       if (s.stamp_display) { try { STAMP_DISPLAY = JSON.parse(s.stamp_display); } catch(e) {} }
       if (s.doc_num_format) { try { DOC_NUM_FORMAT = JSON.parse(s.doc_num_format); } catch(e) {} }
     }
@@ -4519,6 +4676,8 @@ function refreshCategoryDependentUI() {
   if (document.getElementById('docTypePathList')) renderDocTypePathList();
   // 문서 종류별 결재선 설정 (선택 드롭다운 + 편집기)
   if (document.getElementById('catApprovalCategory')) loadCategoryApprovalUI();
+  // 문서 종류별 결재란 위치 (선택 드롭다운 + 편집기)
+  if (document.getElementById('catStampCategory')) loadStampPositionUI();
   // 검색 화면의 종류 필터
   if (document.getElementById('searchCategory')) populateSearchCategorySelect();
 }
