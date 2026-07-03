@@ -4912,12 +4912,13 @@ document.addEventListener('DOMContentLoaded', function() {
     if (dd && !e.target.closest('#bomSearchSection')) dd.style.display = 'none';
   });
 
-  // 20초마다 알림 + 대시보드 자동 갱신
+  // 5분마다 알림 + 대시보드 자동 갱신 (탭이 화면에 보일 때만 — Firestore 읽기 비용 절감)
   setInterval(() => {
+    if (document.hidden) return; // 탭이 백그라운드/최소화 상태면 갱신하지 않음
     loadNotificationCount();
     if (currentPage === 'dashboard') loadDashboard();
     else if (currentPage === 'pending-approval') loadPendingApproval();
-  }, 20000);
+  }, 300000);
 });
 </script>
 </body>
