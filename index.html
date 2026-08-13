@@ -557,6 +557,7 @@ body { font-family:"Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif; backgro
           <div class="d-flex gap-2">
             <button class="btn btn-outline-secondary btn-sm" onclick="refreshDocDetail()"><i class="bi bi-arrow-clockwise me-1"></i>새로고침</button>
             <button class="btn btn-outline-success btn-sm" id="btnPdf" style="display:none" onclick="handlePdfBtn()"><i class="bi bi-file-pdf me-1"></i>PDF 다운로드</button>
+            <button class="btn btn-outline-warning btn-sm" id="btnDriveRetry" style="display:none" onclick="retryDriveUpload()"><i class="bi bi-google me-1"></i>드라이브 재업로드</button>
             <button class="btn btn-danger btn-sm" id="btnDeleteDoc" style="display:none" onclick="confirmDeleteDoc()"><i class="bi bi-trash me-1"></i>삭제</button>
           </div>
         </div>
@@ -1132,37 +1133,101 @@ const storage = firebase.storage();
 // ============================================================
 const GAS_DRIVE_URL = 'https://script.google.com/macros/s/AKfycbzB9SY_mK_jY2pLkmwmO3g-5DpCgtAE43lK7Q3Y0oA4Ku9LgK_ov4bvf6MbHom2mrhb/exec';
 
-// Google Drive에 PDF 업로드 (GAS 중계, 백그라운드)
-async function uploadToGoogleDrive(pdfBytes, fileName, folderPath) {
-  try {
-    const b64 = arrayBufferToBase64(pdfBytes);
-    const resp = await fetch(GAS_DRIVE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({
-        action: 'save_pdf',
-        folder_path: folderPath,
-        file_name: fileName,
-        pdf_data: b64
-      })
-    });
-    const result = await resp.json();
-    if (result.success) {
-      console.log('Google Drive 저장 완료: ' + folderPath + '/' + fileName);
-    } else {
-      console.warn('Google Drive 저장 실패:', result.error);
-    }
-    return result;
-  } catch(e) {
-    console.warn('Google Drive 백그라운드 저장 실패 (Storage에는 저장됨):', e.message);
-  }
+// GAS 중계 업로드 설정
+const DRIVE_UPLOAD_TIMEOUT_MS = 90000;  // 요청 1회 최대 대기 (GAS 응답 지연 대비)
+const DRIVE_UPLOAD_RETRIES = 3;         // 총 시도 횟수 (일시적 오류 자동 복구)
+const DRIVE_MAX_PAYLOAD = 40 * 1024 * 1024; // GAS POST 한계 근처 사전 차단
+
+// 드라이브 파일/폴더명에 쓸 수 없는 문자 정리
+function sanitizeDriveName(name) {
+  const s = String(name == null ? '' : name)
+    .replace(/[\\\/:*?"<>|\r\n\t]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
+  return s || 'doc';
 }
 
-function arrayBufferToBase64(buffer) {
-  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
+// Google Drive에 PDF 업로드 (GAS 중계, 백그라운드)
+// 가끔 실패하던 원인(네트워크 끊김·GAS 쿼터·HTML 오류페이지 반환·응답 지연)을
+// 타임아웃 + 자동 재시도 + 실제 원인 메시지 반환으로 처리한다.
+// ※ 반드시 {success, error} 객체를 반환한다 (undefined 반환 시 '알 수 없는 오류'로 표시됨)
+async function uploadToGoogleDrive(pdfBytes, fileName, folderPath) {
+  let b64;
+  try {
+    const bytes = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
+    b64 = fb_uint8ToBase64(bytes);   // 청크 방식 (대용량에서도 안전)
+  } catch(e) {
+    return { success:false, error:'PDF 인코딩 실패: ' + (e && e.message ? e.message : e) };
+  }
+
+  const safeName = sanitizeDriveName(fileName);
+  // 빈 구간을 먼저 걸러낸 뒤 정제 (폴더명이 'doc'인 경우까지 지워지지 않도록)
+  const safePath = String(folderPath || '')
+    .split('/')
+    .map(p => p.trim())
+    .filter(p => p)
+    .map(p => sanitizeDriveName(p))
+    .join('/');
+  const payload = JSON.stringify({
+    action: 'save_pdf',
+    folder_path: safePath,
+    file_name: safeName,
+    pdf_data: b64
+  });
+
+  if (payload.length > DRIVE_MAX_PAYLOAD) {
+    return { success:false, error:'PDF 용량 초과(' + Math.round(payload.length/1048576) + 'MB) — 드라이브 중계 업로드 불가' };
+  }
+
+  let lastError = '';
+  for (let attempt = 1; attempt <= DRIVE_UPLOAD_RETRIES; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), DRIVE_UPLOAD_TIMEOUT_MS);
+    try {
+      const resp = await fetch(GAS_DRIVE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: payload,
+        redirect: 'follow',
+        signal: ctrl.signal
+      });
+      const raw = await resp.text();
+      let result = null;
+      try {
+        result = JSON.parse(raw);
+      } catch(_) {
+        // GAS가 JSON 대신 HTML(오류·로그인·쿼터 초과 페이지)을 반환한 경우
+        const snippet = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+        throw new Error('서버가 JSON이 아닌 응답 반환 (HTTP ' + resp.status + ') ' + snippet);
+      }
+      if (result && result.success) {
+        console.log('Google Drive 저장 완료: ' + safePath + '/' + safeName + (attempt > 1 ? ' (재시도 ' + attempt + '회차 성공)' : ''));
+        return result;
+      }
+      lastError = (result && result.error) ? String(result.error)
+                : ('서버가 실패를 반환했으나 사유 없음 (HTTP ' + resp.status + ')');
+      // 일시적 오류로 보이지 않으면(권한·경로 문제 등) 재시도해도 소용없으므로 즉시 종료
+      if (!/quota|한도|too many|simultaneous|timeout|시간|internal|일시|try again|503|500/i.test(lastError)) {
+        return { success:false, error:lastError };
+      }
+    } catch(e) {
+      lastError = (e && e.name === 'AbortError')
+        ? ('응답 시간 초과(' + Math.round(DRIVE_UPLOAD_TIMEOUT_MS/1000) + '초) — 네트워크 지연 또는 GAS 처리 지연')
+        : ((e && e.message) ? e.message : String(e));
+      // fetch 자체 실패(오프라인·CORS·연결 끊김)는 브라우저가 'Failed to fetch'로만 알려줌
+      if (/failed to fetch|networkerror|load failed/i.test(lastError)) {
+        lastError = '네트워크 연결 실패 (인터넷 또는 구글 서버 일시 장애)';
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    console.warn('Google Drive 업로드 실패 (시도 ' + attempt + '/' + DRIVE_UPLOAD_RETRIES + '): ' + lastError);
+    if (attempt < DRIVE_UPLOAD_RETRIES) {
+      await new Promise(r => setTimeout(r, 1500 * Math.pow(2, attempt - 1))); // 1.5초 → 3초 백오프
+    }
+  }
+  return { success:false, error: (lastError || '알 수 없는 오류') + ' (' + DRIVE_UPLOAD_RETRIES + '회 재시도 실패)' };
 }
 
 // ============================================================
@@ -1895,12 +1960,61 @@ async function fb_autoSavePdf(docId) {
   uploadToGoogleDrive(stampedBytes, fileName, drivePath).then((result) => {
     if (result && result.success) {
       showToast('Google Drive 저장 완료 (' + drivePath + '/' + fileName + ')', 'success');
+      db.collection('documents').doc(docId).update({ drive_upload_status:'ok', drive_upload_error:'', drive_upload_path:drivePath+'/'+fileName }).catch(()=>{});
     } else {
-      showToast('Google Drive 저장 실패: ' + (result?.error || '알 수 없는 오류'), 'warning');
+      const err = (result && result.error) ? result.error : '알 수 없는 오류';
+      showToast('Google Drive 저장 실패: ' + err + '<br><small>PDF는 시스템에 정상 저장됨 — 문서 상세에서 [드라이브 재업로드]로 다시 시도하세요.</small>', 'warning', 10000);
+      db.collection('documents').doc(docId).update({ drive_upload_status:'failed', drive_upload_error:err, drive_upload_path:drivePath+'/'+fileName }).catch(()=>{});
     }
-  }).catch(e => {
-    showToast('Google Drive 저장 실패: ' + e.message, 'warning');
   });
+}
+
+// Google Drive 재업로드 (실패한 문서 수동 복구용)
+async function retryDriveUpload(docId) {
+  const id = docId || currentDocId;
+  if (!id) return;
+  const btn = document.getElementById('btnDriveRetry');
+  const btnHtml = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>업로드 중'; }
+  try {
+    const docSnap = await db.collection('documents').doc(id).get();
+    if (!docSnap.exists) { showToast('문서를 찾을 수 없습니다.', 'danger'); return; }
+    const doc = docSnap.data();
+    const srcUrl = doc.pdf_url || doc.file_url;
+    if (!srcUrl) { showToast('업로드할 PDF가 없습니다. 먼저 PDF를 생성하세요.', 'warning'); return; }
+
+    // 저장 경로: 처음 시도했던 경로를 그대로 재사용한다.
+    // (fb_getPdfStoragePath는 '오늘' 기준으로 연/월을 만들기 때문에,
+    //  지난달 승인 문서를 재업로드하면 엉뚱한 폴더로 들어감)
+    let drivePath, fileName;
+    if (doc.drive_upload_path && doc.drive_upload_path.indexOf('/') > -1) {
+      const cut = doc.drive_upload_path.lastIndexOf('/');
+      drivePath = doc.drive_upload_path.slice(0, cut);
+      fileName = doc.drive_upload_path.slice(cut + 1);
+    } else {
+      fileName = (doc.doc_number || 'doc') + '_' + (doc.title || '') + '.pdf';
+      drivePath = (await fb_getPdfStoragePath(doc)).replace(/^approved_pdfs\/?/, '');
+    }
+
+    const resp = await fetch(srcUrl);
+    if (!resp.ok) { showToast('PDF를 불러오지 못했습니다 (HTTP ' + resp.status + ')', 'danger', 8000); return; }
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+
+    const result = await uploadToGoogleDrive(bytes, fileName, drivePath);
+    const err = (result && result.error) ? result.error : '알 수 없는 오류';
+    if (result && result.success) {
+      showToast('Google Drive 저장 완료 (' + drivePath + '/' + fileName + ')', 'success');
+      await db.collection('documents').doc(id).update({ drive_upload_status:'ok', drive_upload_error:'', drive_upload_path:drivePath+'/'+fileName });
+    } else {
+      showToast('Google Drive 재업로드 실패: ' + err, 'warning', 10000);
+      await db.collection('documents').doc(id).update({ drive_upload_status:'failed', drive_upload_error:err, drive_upload_path:drivePath+'/'+fileName });
+    }
+    if (currentDocId === id) await refreshDocDetail();
+  } catch(e) {
+    showToast('Google Drive 재업로드 실패: ' + (e.message || e), 'danger', 10000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = btnHtml; }
+  }
 }
 
 // ============================================================
@@ -2343,15 +2457,16 @@ function showLoading(text) {
 }
 function hideLoading() { document.getElementById('loadingOverlay').style.display = 'none'; }
 
-function showToast(msg, type = 'success') {
+function showToast(msg, type = 'success', duration = 4000) {
   const c = document.getElementById('toastContainer');
   const icons = { success:'check-circle-fill', danger:'exclamation-triangle-fill', warning:'exclamation-circle-fill', info:'info-circle-fill' };
   const t = document.createElement('div');
   t.className = `toast show align-items-center text-bg-${type} border-0`;
   t.style.maxWidth = '420px';
   t.innerHTML = `<div class="d-flex"><div class="toast-body"><i class="bi bi-${icons[type]||'info-circle-fill'} me-2"></i>${msg}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>`;
+  t.querySelector('.btn-close').addEventListener('click', () => t.remove());
   c.appendChild(t);
-  setTimeout(() => t.remove(), 4000);
+  setTimeout(() => t.remove(), duration);
 }
 
 // ============================================================
@@ -3452,6 +3567,18 @@ async function viewDocument(docId) {
     // PDF 버튼: 승인된 문서에서 pdf_url 유무에 따라 다운로드/저장 버튼 표시
     // PDF 다운로드: 승인 완료 시 또는 결재 진행중이더라도 표시 (스탬프 포함 PDF 생성)
     document.getElementById('btnPdf').style.display = (doc.status === 'approved' || doc.status === 'pending') ? 'inline-block' : 'none';
+    // 드라이브 재업로드 버튼: 업로드 실패 문서에 노출 (관리자는 승인 문서 전체에서 사용 가능
+    // — 이 기능 적용 전에 실패한 과거 문서는 drive_upload_status 값이 없기 때문)
+    const btnDrive = document.getElementById('btnDriveRetry');
+    if (btnDrive) {
+      const driveFailed = doc.drive_upload_status === 'failed';
+      const showDrive = doc.status === 'approved' && (driveFailed || CURRENT_USER.role === 'admin');
+      btnDrive.style.display = showDrive ? 'inline-block' : 'none';
+      btnDrive.className = 'btn btn-sm ' + (driveFailed ? 'btn-warning' : 'btn-outline-secondary');
+      btnDrive.title = driveFailed
+        ? ('드라이브 저장 실패 — 마지막 사유: ' + (doc.drive_upload_error || '사유 없음'))
+        : '이 문서의 PDF를 Google Drive에 다시 올립니다.';
+    }
 
     // 승인일 표시
     const dateStamp = document.getElementById('approvalDateStamp');
